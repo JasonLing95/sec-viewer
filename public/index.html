@@ -5,69 +5,126 @@
     <title>13F-HR Screener</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
+        .header-container { display: flex; justify-content: space-between; align-items: center; }
+        #back-btn { display: none; padding: 6px 12px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        #back-btn:hover { background: #0051a8; }
+        
         .screener-table { width: 100%; border-collapse: collapse; background: white; font-size: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .screener-table th { background: #d3d3d3; color: #000; padding: 6px; text-align: left; border: 1px solid #ccc; font-weight: bold; }
         .screener-table td { padding: 4px 6px; border: 1px solid #eee; }
-        .screener-table tr:nth-child(even) { background-color: #f9f9f9; }
-        .screener-table tr:hover { background-color: #e8f4f8; cursor: pointer; }
+        .screener-table tbody tr:nth-child(even) { background-color: #f9f9f9; }
+        .screener-table tbody tr:hover { background-color: #e8f4f8; cursor: pointer; }
+        
         .ticker { font-weight: bold; color: #1a0dab; text-decoration: none; font-family: monospace; font-size: 13px;}
         .cusip { color: #555; font-family: monospace; }
+        .loading { text-align: center; padding: 20px; font-style: italic; color: #666; }
     </style>
 </head>
 <body>
-    <h3>Latest 13F-HR Holdings</h3>
+    <div class="header-container">
+        <h3 id="page-title">Latest 13F-HR Filings</h3>
+        <button id="back-btn" onclick="loadFilings()">← Back to Filings</button>
+    </div>
+
     <table class="screener-table" id="data-table">
-        <thead>
-            <tr>
+        <thead id="table-head">
+            <!-- Headers injected here -->
+        </thead>
+        <tbody id="table-body">
+            <!-- Data injected here -->
+        </tbody>
+    </table>
+
+    <script>
+        const tableHead = document.getElementById('table-head');
+        const tableBody = document.getElementById('table-body');
+        const pageTitle = document.getElementById('page-title');
+        const backBtn = document.getElementById('back-btn');
+
+        // 1. Load the list of funds (Default View)
+        function loadFilings() {
+            pageTitle.innerText = "Latest 13F-HR Filings";
+            backBtn.style.display = "none";
+            
+            tableHead.innerHTML = `<tr>
+                <th>No.</th>
+                <th>Fund / Company</th>
+                <th>CIK</th>
+                <th>Filing Date</th>
+                <th>Accession No.</th>
+            </tr>`;
+            tableBody.innerHTML = `<tr><td colspan="5" class="loading">Loading latest filings...</td></tr>`;
+
+            fetch('/api/filings')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    tableBody.innerHTML = '';
+                    
+                    data.filings.forEach((filing, index) => {
+                        // Clicking a row triggers loadHoldings for that specific filing
+                        const row = `<tr onclick="loadHoldings('${filing.accession_no}')">
+                            <td>${index + 1}</td>
+                            <td style="font-weight: bold;">${filing.company}</td>
+                            <td>${filing.cik}</td>
+                            <td>${filing.date}</td>
+                            <td class="cusip">${filing.accession_no}</td>
+                        </tr>`;
+                        tableBody.innerHTML += row;
+                    });
+                })
+                .catch(err => {
+                    tableBody.innerHTML = `<tr><td colspan="5" style="color: red; text-align: center;">Error: ${err.message}</td></tr>`;
+                });
+        }
+
+        // 2. Load the stock holdings for a specific fund (Deep Dive View)
+        function loadHoldings(accessionNo) {
+            pageTitle.innerText = "Loading Holdings...";
+            backBtn.style.display = "block";
+            
+            tableHead.innerHTML = `<tr>
                 <th>No.</th>
                 <th>Ticker/Issuer</th>
                 <th>CUSIP</th>
                 <th>Class</th>
                 <th>Shares</th>
                 <th>Value (USD)</th>
-            </tr>
-        </thead>
-        <tbody id="table-body">
-            </tbody>
-    </table>
+            </tr>`;
+            tableBody.innerHTML = `<tr><td colspan="6" class="loading">Parsing holdings for ${accessionNo}...</td></tr>`;
 
-    <script>
-        fetch('/api/latest-13f')
-            .then(response => response.json())
-            .then(data => {
-                const tbody = document.getElementById('table-body');
-                
-                // 1. Check if the backend sent back an error message
-                if (data.error) {
-                    tbody.innerHTML = `<tr><td colspan="6" style="color: red; text-align: center; padding: 20px;">Backend Error: ${data.error}</td></tr>`;
-                    console.error("Backend Error:", data.error, data.type);
-                    return; // Stop here so it doesn't try to run forEach
-                }
+            fetch(`/api/holdings/${accessionNo}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    
+                    pageTitle.innerText = `Holdings: ${data.company}`;
+                    tableBody.innerHTML = '';
+                    
+                    if (!data.holdings || data.holdings.length === 0) {
+                        tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center;">No stock holdings found in this filing.</td></tr>`;
+                        return;
+                    }
 
-                // 2. Safety check: make sure holdings actually exists
-                if (!data.holdings) {
-                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px;">No holdings data returned.</td></tr>`;
-                    return;
-                }
-
-                // 3. Render the table if everything is fine
-                data.holdings.forEach((holding, index) => {
-                    const row = `<tr>
-                        <td>${index + 1}</td>
-                        <td class="ticker">${holding.ticker}</td>
-                        <td class="cusip">${holding.cusip}</td>
-                        <td>${holding.class}</td>
-                        <td>${holding.shares.toLocaleString()}</td>
-                        <td>$${holding.value_usd.toLocaleString()}</td>
-                    </tr>`;
-                    tbody.innerHTML += row;
+                    data.holdings.forEach((holding, index) => {
+                        const row = `<tr>
+                            <td>${index + 1}</td>
+                            <td class="ticker">${holding.ticker}</td>
+                            <td class="cusip">${holding.cusip}</td>
+                            <td>${holding.class}</td>
+                            <td>${holding.shares.toLocaleString()}</td>
+                            <td>$${holding.value_usd.toLocaleString()}</td>
+                        </tr>`;
+                        tableBody.innerHTML += row;
+                    });
+                })
+                .catch(err => {
+                    tableBody.innerHTML = `<tr><td colspan="6" style="color: red; text-align: center;">Error: ${err.message}</td></tr>`;
                 });
-            })
-            .catch(err => {
-                // This catches network errors (like 500s that don't return JSON)
-                console.error("Fetch Error:", err);
-                document.getElementById('table-body').innerHTML = `<tr><td colspan="6" style="color: red; text-align: center; padding: 20px;">Network Error: Could not connect to API.</td></tr>`;
-            });
+        }
+
+        // Initialize the app
+        loadFilings();
     </script>
 </body>
 </html>
