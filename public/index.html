@@ -129,6 +129,10 @@
                     <div class="tooltip">ⓘ<span class="tooltip-text">Quarter-over-Quarter portfolio churn. Calculated as minimum(Buys, Sells) divided by Average AUM. High turnover implies active short-term trading.</span></div>
                     <span id="c-turnover" style="font-weight: bold; color: #d32f2f;">-%</span><br>
                     
+                    <strong>Top 10 Hold Time:</strong>
+                    <div class="tooltip">ⓘ<span class="tooltip-text">Average consecutive quarters the current Top 10 positions have been held (Max 3-Year Lookback). Calculated in the background.</span></div>
+                    <span id="c-holdtime" style="font-weight: bold; color: #888; font-style: italic;">Calculating...</span><br>
+                    
                     <div id="concentration-bar-wrapper" style="width: 100%; background: #e0e0e0; height: 6px; border-radius: 3px; margin-top: 4px; display: none;">
                         <div id="concentration-bar" style="background: #0070f3; height: 100%; border-radius: 3px; width: 0%;"></div>
                     </div>
@@ -167,7 +171,7 @@
                     <tr>
                         <th onclick="sortStocks('ticker')">Ticker ↕</th>
                         <th onclick="sortStocks('cusip')">CUSIP ↕</th>
-                        <th onclick="sortStocks('class')">Class ↕</th>
+                        <th onclick="sortStocks('class')">Class ↕</th> <th onclick="sortStocks('weight_pct')">Port % ↕</th>
                         <th onclick="sortStocks('share_type')">Type ↕</th>
                         <th onclick="sortStocks('shares')" style="text-align: right;">Shares / PRN ↕</th>
                         <th onclick="sortStocks('value_usd')" style="text-align: right;">Value ($k) ↕</th>
@@ -196,7 +200,7 @@
                     <tr>
                         <th onclick="sortOptions('ticker')">Ticker ↕</th>
                         <th onclick="sortOptions('cusip')">CUSIP ↕</th>
-                        <th onclick="sortOptions('class')">Class ↕</th>
+                        <th onclick="sortOptions('class')">Class ↕</th> <th onclick="sortOptions('weight_pct')">Port % ↕</th>
                         <th onclick="sortOptions('share_type')">Type ↕</th>
                         <th onclick="sortOptions('shares')" style="text-align: right;">Shares ↕</th>
                         <th onclick="sortOptions('value_usd')" style="text-align: right;">Value ($k) ↕</th>
@@ -311,11 +315,13 @@
                     allStocks = data.holdings.filter(h => h.put_call === 'NONE' || !h.put_call);
                     allOptions = data.holdings.filter(h => h.put_call === 'PUT' || h.put_call === 'CALL');
 
-                    // --- CALCULATE PORTFOLIO CONCENTRATION & TURNOVER STAGE ---
+                    // 1. Calculate Grand Totals First
                     const totalPortfolioValue = data.holdings.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    const prevTotalValue = data.holdings.reduce((sum, item) => sum + (item.prev_value_usd || 0), 0);
                     
                     const totalEquityValue = allStocks.reduce((sum, item) => sum + (item.value_usd || 0), 0);
                     const totalOptionsValue = allOptions.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    
                     let optionsRatio = "0.0x";
                     if (totalEquityValue > 0) {
                         optionsRatio = (totalOptionsValue / totalEquityValue).toFixed(2) + "x";
@@ -324,54 +330,76 @@
                     const sortedByValue = [...data.holdings].sort((a, b) => b.value_usd - a.value_usd);
                     const top10Value = sortedByValue.slice(0, 10).reduce((sum, item) => sum + (item.value_usd || 0), 0);
                     
-                    let concentrationPct = 0;
-                    if (totalPortfolioValue > 0) {
-                        concentrationPct = (top10Value / totalPortfolioValue) * 100;
-                    }
+                    let concentrationPct = totalPortfolioValue > 0 ? (top10Value / totalPortfolioValue) * 100 : 0;
 
-                    // NEW: Calculate QoQ Portfolio Turnover
+                    // 2. Loop through and calculate Weights, Deltas, and Turnover
                     let totalBuys = 0;
                     let totalSells = 0;
-                    let prevTotalValue = 0;
 
                     data.holdings.forEach(h => {
-                        prevTotalValue += (h.prev_value_usd || 0);
-                        
+                        // Turnover calculations
                         if (h.status === 'New') {
-                            totalBuys += h.value_usd; // Full current value is a buy
+                            totalBuys += h.value_usd; 
                         } else if (h.status === 'Increased') {
-                            // Estimate dollar amount bought based on current price proxy
                             const pctAdded = h.change_shares / h.shares;
                             totalBuys += (h.value_usd * pctAdded);
                         } else if (h.status === 'Closed') {
-                            totalSells += h.prev_value_usd; // Full previous value is a sell
+                            totalSells += h.prev_value_usd; 
                         } else if (h.status === 'Decreased') {
-                            // Estimate dollar amount sold based on previous price proxy
                             const pctSold = Math.abs(h.change_shares) / h.prev_shares;
                             totalSells += (h.prev_value_usd * pctSold);
                         }
 
-                        // Calculate Portfolio Weight while we loop
-                        h.weight_pct = totalPortfolioValue > 0 ? ((h.value_usd / totalPortfolioValue) * 100).toFixed(2) : 0;
+                        // NEW: Portfolio Weight & Weight Delta
+                        const currentWeight = totalPortfolioValue > 0 ? (h.value_usd / totalPortfolioValue) * 100 : 0;
+                        const prevWeight = prevTotalValue > 0 ? ((h.prev_value_usd || 0) / prevTotalValue) * 100 : 0;
+                        
+                        h.weight_pct = currentWeight.toFixed(2);
+                        h.weight_delta = (currentWeight - prevWeight).toFixed(2);
                     });
 
-                    // Turnover Formula: min(Buys, Sells) / Average AUM
+                    // 3. Turnover Formula: min(Buys, Sells) / Average AUM
                     let turnoverPct = 0;
                     let hasHistory = prevTotalValue > 0;
                     if (hasHistory && totalPortfolioValue > 0) {
                         const avgAUM = (prevTotalValue + totalPortfolioValue) / 2;
                         turnoverPct = (Math.min(totalBuys, totalSells) / avgAUM) * 100;
                     }
-                    
-                    // 5. Inject calculated metrics into UI panel
-                    // Convert thousands to a readable Dollar format (e.g., $150,000k -> $150.00M)
+
+                    // 4. Inject calculations into UI panel
                     const aumMillions = (totalPortfolioValue / 1000).toFixed(2);
                     document.getElementById('c-aum').innerText = `$${parseFloat(aumMillions).toLocaleString()}M`;
                     document.getElementById('c-concentration').innerText = `${concentrationPct.toFixed(2)}%`;
                     document.getElementById('c-options').innerText = optionsRatio;
-                    
-                    // Display Turnover (or N/A if it's their very first filing)
                     document.getElementById('c-turnover').innerText = hasHistory ? `${turnoverPct.toFixed(2)}%` : "N/A (No previous quarter)";
+                    
+                    // --- START ASYNC HOLD TIME CALCULATION ---
+                    document.getElementById('c-holdtime').innerText = "Calculating...";
+                    document.getElementById('c-holdtime').style.color = "#888";
+                    
+                    const top10Cusips = sortedByValue.slice(0, 10).map(h => h.cusip).filter(c => c && c !== 'N/A');
+                    
+                    fetch('/api/metrics/holdtime', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            cik: data.cik.toString(),
+                            accession_no: accessionNo,
+                            top_cusips: top10Cusips
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(metricData => {
+                        if(metricData.error) throw new Error(metricData.error);
+                        document.getElementById('c-holdtime').innerText = `${metricData.avg_top_10_hold} Qtrs`;
+                        document.getElementById('c-holdtime').style.color = "#111"; // Shift color to dark to indicate completion
+                        document.getElementById('c-holdtime').style.fontStyle = "normal";
+                    })
+                    .catch(err => {
+                        document.getElementById('c-holdtime').innerText = "Data Unavailable";
+                        console.error("Hold time calc failed:", err);
+                    });
+                    // --- END ASYNC HOLD TIME CALCULATION ---
 
                     // Visual bar adjustment
                     document.getElementById('concentration-bar-wrapper').style.display = 'block';
@@ -420,7 +448,7 @@
             if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
             if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
 
-            // Format the Delta column based on status
+            // Format the Shares Delta column
             let deltaHtml = `<span class="status-same">-</span>`;
             if (h.status === 'New') {
                 deltaHtml = `<span class="status-new">NEW</span>`;
@@ -432,13 +460,25 @@
                 deltaHtml = `<span class="status-dec">▼ ${Math.abs(h.change_pct)}%</span><br><span style="font-size:9px; color:#888;">${h.change_shares.toLocaleString()} sh</span>`;
             }
 
+            // NEW: Format the Weight Delta sub-text
+            let weightDeltaHtml = `<span style="color: #888; font-size: 10px;">(-)</span>`;
+            if (h.status === 'New') {
+                weightDeltaHtml = `<span style="color: #2e7d32; font-size: 10px;">(New)</span>`;
+            } else if (h.weight_delta > 0) {
+                weightDeltaHtml = `<span style="color: #2e7d32; font-size: 10px;">(+${h.weight_delta}%)</span>`;
+            } else if (h.weight_delta < 0) {
+                weightDeltaHtml = `<span style="color: #c62828; font-size: 10px;">(${h.weight_delta}%)</span>`;
+            }
+
             // Dim rows that are closed out
             const rowStyle = h.status === 'Closed' ? 'opacity: 0.6; background: #fdfdfd;' : '';
 
             return `<tr style="${rowStyle}">
                 <td class="ticker">${h.ticker}</td>
                 <td class="mono">${h.cusip}</td>
-                <td>${h.class}</td>
+                <td>${h.class}</td> <td style="font-weight: bold; color: #444;">
+                    ${h.weight_pct}%<br>${weightDeltaHtml}
+                </td>
                 <td><span class="badge">${h.share_type}</span></td>
                 <td class="num">${h.shares.toLocaleString()}</td>
                 <td class="num">$${h.value_usd.toLocaleString()}</td>

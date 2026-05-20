@@ -28,6 +28,12 @@ class SummaryRequest(BaseModel):
     )
 
 
+class HoldTimeRequest(BaseModel):
+    cik: str
+    accession_no: str
+    top_cusips: List[str]
+
+
 @app.post("/api/summarize-portfolio")
 def summarize_portfolio(data: SummaryRequest):
     try:
@@ -59,6 +65,73 @@ def summarize_portfolio(data: SummaryRequest):
         )
 
         return JSONResponse(content={"summary": completion.choices[0].message.content})
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/metrics/holdtime")
+def calculate_holdtime(data: HoldTimeRequest):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        comp = Company(data.cik)
+        recent_filings = comp.get_filings(form="13F-HR").latest(12)
+
+        # Identify where the current filing is in the history
+        start_idx = 0
+        for i, f in enumerate(recent_filings):
+            if f.accession_no == data.accession_no:
+                start_idx = i + 1  # We only want quarters BEFORE the current one
+                break
+
+        history_to_check = recent_filings[start_idx : start_idx + 11]
+
+        historical_cusip_sets = []
+        ns = {"ns": "http://www.sec.gov/edgar/document/thirteenf/informationtable"}
+
+        for f in history_to_check:
+            try:
+                xml_text = None
+                for att in f.attachments:
+                    if (
+                        "infotable" in att.document.lower()
+                        or "INFORMATION TABLE" in att.document_type.upper()
+                    ):
+                        xml_text = att.text()
+                        break
+
+                if xml_text:
+                    root = etree.fromstring(xml_text.encode("utf-8"))
+                    # HIGH SPEED OPTIMIZATION: Only parse the CUSIP strings, ignore the rest of the XML
+                    cusips = set(
+                        [
+                            node.text.strip()
+                            for node in root.xpath(
+                                "//ns:infoTable/ns:cusip", namespaces=ns
+                            )
+                            if node.text
+                        ]
+                    )
+                    historical_cusip_sets.append(cusips)
+                else:
+                    historical_cusip_sets.append(set())
+            except:
+                historical_cusip_sets.append(set())  # Failsafe for corrupted SEC files
+
+        # Calculate streak for the requested Top 10 CUSIPs
+        total_quarters = 0
+        for cusip in data.top_cusips:
+            streak = 1  # Starts at 1 for the current quarter
+            for past_set in historical_cusip_sets:
+                if cusip in past_set:
+                    streak += 1
+                else:
+                    break  # Streak broken
+            total_quarters += streak
+
+        avg_hold = round(total_quarters / max(len(data.top_cusips), 1), 1)
+
+        return JSONResponse(content={"avg_top_10_hold": avg_hold})
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
