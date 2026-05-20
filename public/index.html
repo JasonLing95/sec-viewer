@@ -36,6 +36,21 @@
             .then(response => response.json())
             .then(data => {
                 const tbody = document.getElementById('table-body');
+                
+                // 1. Check if the backend sent back an error message
+                if (data.error) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="color: red; text-align: center; padding: 20px;">Backend Error: ${data.error}</td></tr>`;
+                    console.error("Backend Error:", data.error, data.type);
+                    return; // Stop here so it doesn't try to run forEach
+                }
+
+                // 2. Safety check: make sure holdings actually exists
+                if (!data.holdings) {
+                    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; padding: 20px;">No holdings data returned.</td></tr>`;
+                    return;
+                }
+
+                // 3. Render the table if everything is fine
                 data.holdings.forEach((holding, index) => {
                     const row = `<tr>
                         <td>${index + 1}</td>
@@ -47,6 +62,11 @@
                     </tr>`;
                     tbody.innerHTML += row;
                 });
+            })
+            .catch(err => {
+                // This catches network errors (like 500s that don't return JSON)
+                console.error("Fetch Error:", err);
+                document.getElementById('table-body').innerHTML = `<tr><td colspan="6" style="color: red; text-align: center; padding: 20px;">Network Error: Could not connect to API.</td></tr>`;
             });
     </script>
 </body>

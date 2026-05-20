@@ -1,41 +1,54 @@
 import os
 
+# Ensure Vercel's read-only file system doesn't crash the edgar cache
 os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from edgar import set_identity, get_filings
-import json
+from edgar import set_identity, get_filings, get_by_accession_number
 
 app = FastAPI()
 
 
-# Vercel requires the app instance to be available at the module level
-@app.get("/api/latest-13f")
-def get_latest_13f():
-    # edgartools requires a registered user agent (usually an email)
-    set_identity("data-pipeline@yourdomain.com")
-
+# Endpoint 1: The Screener Front Page (List of Funds)
+@app.get("/api/filings")
+def get_recent_filings():
+    set_identity("data-pipeline@company.com")
     try:
-        # Fetch the most recent 13F-HR filing
-        filings = get_filings(form="13F-HR").latest(1)
-        if not filings:
-            return {"error": "No 13F-HR filings found"}
+        # Fetch the metadata for the 50 newest 13F-HR filings
+        filings = get_filings(form="13F-HR").latest(50)
 
-        latest_filing = filings[0]
-        thirteen_f = latest_filing.obj()
+        results = []
+        for filing in filings:
+            results.append(
+                {
+                    "company": filing.company,
+                    "cik": filing.cik,
+                    "date": str(filing.filing_date),
+                    "accession_no": filing.accession_no,
+                }
+            )
 
-        # The infotable contains the actual stock holdings
+        return JSONResponse(content={"filings": results})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# Endpoint 2: The Deep Dive (Stock Holdings for a specific fund)
+@app.get("/api/holdings/{accession_no}")
+def get_holdings(accession_no: str):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        # Fetch the specific filing the user clicked on
+        filing = get_by_accession_number(accession_no)
+        thirteen_f = filing.obj()
         holdings_df = thirteen_f.infotable
 
-        # Format the data to prioritize Ticker and CUSIP over the fund name
         processed_holdings = []
         for _, row in holdings_df.iterrows():
             processed_holdings.append(
                 {
-                    "ticker": row.get(
-                        "nameOfIssuer", "N/A"
-                    ),  # Often maps to ticker or issuer name
+                    "ticker": row.get("nameOfIssuer", "N/A"),
                     "cusip": row.get("cusip", "N/A"),
                     "shares": row.get("sshPrnamt", 0),
                     "value_usd": row.get("value", 0),
@@ -44,14 +57,7 @@ def get_latest_13f():
             )
 
         return JSONResponse(
-            content={
-                "filing_date": str(latest_filing.filing_date),
-                "accession_no": latest_filing.accession_no,
-                "holdings": processed_holdings[
-                    :100
-                ],  # Cap at 100 for serverless performance
-            }
+            content={"company": filing.company, "holdings": processed_holdings[:100]}
         )
-
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"error": str(e)})
