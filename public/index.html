@@ -44,6 +44,12 @@
         #summary-output p { margin-top: 0; margin-bottom: 10px; }
         #summary-output ul { margin-top: 0; padding-left: 20px; }
         #summary-output strong { color: #111; }
+
+        .status-new { color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 4px; border-radius: 3px; font-size: 10px;}
+        .status-inc { color: #2e7d32; }
+        .status-dec { color: #c62828; }
+        .status-closed { color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 4px; border-radius: 3px; font-size: 10px;}
+        .status-same { color: #888; }
     </style>
 </head>
 <body>
@@ -127,7 +133,8 @@
                         <th onclick="sortStocks('share_type')">Type ↕</th>
                         <th onclick="sortStocks('shares')" style="text-align: right;">Shares / PRN ↕</th>
                         <th onclick="sortStocks('value_usd')" style="text-align: right;">Value ($k) ↕</th>
-                        <th onclick="sortStocks('discretion')">Discr ↕</th>
+                        <th onclick="sortHoldings('change_pct')" style="text-align: right;">QoQ Delta ↕</th>
+                        <th onclick="sortHoldings('discretion')">Discr ↕</th>
                         <th>Option</th>
                     </tr>
                 </thead>
@@ -299,13 +306,29 @@
             if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
             if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
 
-            return `<tr>
+            // Format the Delta column based on status
+            let deltaHtml = `<span class="status-same">-</span>`;
+            if (h.status === 'New') {
+                deltaHtml = `<span class="status-new">NEW</span>`;
+            } else if (h.status === 'Closed') {
+                deltaHtml = `<span class="status-closed">CLOSED</span>`;
+            } else if (h.status === 'Increased') {
+                deltaHtml = `<span class="status-inc">▲ ${h.change_pct}%</span><br><span style="font-size:9px; color:#888;">+${h.change_shares.toLocaleString()} sh</span>`;
+            } else if (h.status === 'Decreased') {
+                deltaHtml = `<span class="status-dec">▼ ${Math.abs(h.change_pct)}%</span><br><span style="font-size:9px; color:#888;">${h.change_shares.toLocaleString()} sh</span>`;
+            }
+
+            // Dim rows that are closed out
+            const rowStyle = h.status === 'Closed' ? 'opacity: 0.6; background: #fdfdfd;' : '';
+
+            return `<tr style="${rowStyle}">
                 <td class="ticker">${h.ticker}</td>
                 <td class="mono">${h.cusip}</td>
                 <td>${h.class}</td>
                 <td><span class="badge">${h.share_type}</span></td>
                 <td class="num">${h.shares.toLocaleString()}</td>
                 <td class="num">$${h.value_usd.toLocaleString()}</td>
+                <td class="num" style="border-left: 2px solid #eee;">${deltaHtml}</td>
                 <td><span class="badge">${h.discretion}</span></td>
                 <td>${optBadge}</td>
             </tr>`;

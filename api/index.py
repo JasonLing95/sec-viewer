@@ -176,10 +176,10 @@ def get_holdings(accession_no: str):
             "category": "N/A",
         }
 
+        comp = None
+        previous_filing = None
         try:
             comp = Company(filing.cik)
-
-            # Safely extract the new company details
             company_details["fiscal_year"] = getattr(comp, "fiscal_year_end", "N/A")
             company_details["incorporated"] = getattr(
                 comp, "state_of_incorporation", "N/A"
@@ -187,75 +187,160 @@ def get_holdings(accession_no: str):
             company_details["phone"] = getattr(comp, "phone", "N/A")
             company_details["category"] = getattr(comp, "business_category", "N/A")
 
-            # The address is usually an object in edgartools, so we stringify it if it exists
             biz_address = getattr(comp, "business_address", None)
             if biz_address:
-                # Extract street, city, state, zip cleanly
                 address_parts = [
                     getattr(biz_address, "street1", ""),
                     getattr(biz_address, "city", ""),
                     getattr(biz_address, "state_or_country", ""),
                     getattr(biz_address, "zipcode", ""),
                 ]
-                # Filter out empty strings and join with commas
                 company_details["address"] = ", ".join(filter(None, address_parts))
 
-            # Fetch the 12 most recent 13F-HRs
+            # Fetch the history to find the previous quarter
             recent_filings = comp.get_filings(form="13F-HR").latest(12)
-            for rf in recent_filings:
+            for i, rf in enumerate(recent_filings):
                 recent_list.append(
                     {"accession_no": rf.accession_no, "date": str(rf.filing_date)}
                 )
+                # Find the filing that immediately precedes the currently requested one
+                if rf.accession_no == accession_no and i + 1 < len(recent_filings):
+                    previous_filing = recent_filings[i + 1]
         except Exception as e:
-            print(f"Metadata extraction failed: {e}")  # Failsafe
+            print(f"Metadata extraction failed: {e}")
 
         cik_stripped = str(filing.cik).lstrip("0")
         acc_no_stripped = accession_no.replace("-", "")
         sec_index_url = f"https://www.sec.gov/Archives/edgar/data/{cik_stripped}/{acc_no_stripped}/{accession_no}-index.html"
 
-        xml_text = None
-        sec_xml_url = "#"
-        for att in filing.attachments:
-            if (
-                "infotable" in att.document.lower()
-                or "INFORMATION TABLE" in att.document_type.upper()
-            ):
-                xml_text = att.text()
-                # Grab the direct URL to the XML file if edgartools has it, otherwise construct a fallback
-                sec_xml_url = getattr(
-                    att,
-                    "url",
-                    f"https://www.sec.gov/Archives/edgar/data/{cik_stripped}/{acc_no_stripped}/{att.document}",
-                )
-                break
+        # 2. Helper function to parse XML attachments
+        def parse_filing_xml(f_obj):
+            xml_text = None
+            xml_url = "#"
+            for att in f_obj.attachments:
+                if (
+                    "infotable" in att.document.lower()
+                    or "INFORMATION TABLE" in att.document_type.upper()
+                ):
+                    xml_text = att.text()
+                    c_strip = str(f_obj.cik).lstrip("0")
+                    a_strip = f_obj.accession_no.replace("-", "")
+                    xml_url = getattr(
+                        att,
+                        "url",
+                        f"https://www.sec.gov/Archives/edgar/data/{c_strip}/{a_strip}/{att.document}",
+                    )
+                    break
+            if not xml_text:
+                return [], xml_url
+            root = etree.fromstring(xml_text.encode("utf-8"))
+            ns = {"ns": "http://www.sec.gov/edgar/document/thirteenf/informationtable"}
+            tables = root.xpath("//ns:infoTable", namespaces=ns)
+            return (
+                gather_holdings_using_lxml(tables, ns, f_obj.cik, f_obj.accession_no),
+                xml_url,
+            )
 
-        if not xml_text:
+        # 3. Parse Current Quarter
+        current_holdings, sec_xml_url = parse_filing_xml(filing)
+        if not current_holdings:
             return JSONResponse(
                 status_code=404, content={"error": "Information table XML not found."}
             )
 
-        root = etree.fromstring(xml_text.encode("utf-8"))
-        ns = {"ns": "http://www.sec.gov/edgar/document/thirteenf/informationtable"}
-        tables = root.xpath("//ns:infoTable", namespaces=ns)
-        holdings_list = gather_holdings_using_lxml(tables, ns, filing.cik, accession_no)
+        # 4. Parse Previous Quarter (if it exists)
+        previous_holdings = []
+        if previous_filing:
+            previous_holdings, _ = parse_filing_xml(previous_filing)
 
+        # 5. Build lookup dictionary for previous holdings using CUSIP + Option Type as the unique key
+        prev_dict = {}
+        for h in previous_holdings:
+            # h[12] is CUSIP, h[7] is put_call flag
+            key = f"{h[12]}_{h[7]}"
+            # Accumulate shares (sometimes funds report the same stock in multiple rows)
+            prev_dict[key] = prev_dict.get(key, 0) + h[2]
+
+        # 6. Map current holdings and calculate changes
         processed_holdings = []
-        for h in holdings_list:
+        current_keys = set()
+
+        for h in current_holdings:
+            cusip = h[12] or "N/A"
+            put_call = h[7]
+            key = f"{cusip}_{put_call}"
+            current_keys.add(key)
+
+            current_shares = h[2]
+            prev_shares = prev_dict.get(key, 0)
+
+            # Determine Change Status
+            status = "Maintained"
+            change_shares = 0
+            change_pct = 0.0
+
+            if prev_shares == 0:
+                status = "New"
+                change_shares = current_shares
+            elif current_shares > prev_shares:
+                status = "Increased"
+                change_shares = current_shares - prev_shares
+                change_pct = (change_shares / prev_shares) * 100
+            elif current_shares < prev_shares:
+                status = "Decreased"
+                change_shares = current_shares - prev_shares  # Will be negative
+                change_pct = (change_shares / prev_shares) * 100
+
             processed_holdings.append(
                 {
-                    "shares": h[2],
-                    "value_usd": h[3],
+                    "ticker": h[11] or "N/A",
+                    "cusip": cusip,
                     "class": h[4],
                     "share_type": h[5],
                     "discretion": h[6],
-                    "put_call": h[7],
+                    "put_call": put_call,
                     "vote_sole": h[8],
                     "vote_shared": h[9],
                     "vote_none": h[10],
-                    "ticker": h[11] or "N/A",
-                    "cusip": h[12] or "N/A",
+                    "shares": current_shares,
+                    "value_usd": h[3],
+                    "prev_shares": prev_shares,
+                    "change_shares": change_shares,
+                    "change_pct": round(change_pct, 2),
+                    "status": status,
                 }
             )
+
+        # 7. Find Closed Positions (Positions in prev_dict that aren't in current_keys)
+        for key, prev_shares in prev_dict.items():
+            if key not in current_keys:
+                cusip, put_call = key.split("_")
+                # Try to find the ticker name from the previous dataset
+                ticker = "N/A"
+                for ph in previous_holdings:
+                    if ph[12] == cusip and ph[7] == put_call:
+                        ticker = ph[11] or "N/A"
+                        break
+
+                processed_holdings.append(
+                    {
+                        "ticker": ticker,
+                        "cusip": cusip,
+                        "class": "N/A",
+                        "share_type": "N/A",
+                        "discretion": "N/A",
+                        "put_call": put_call,
+                        "vote_sole": 0,
+                        "vote_shared": 0,
+                        "vote_none": 0,
+                        "shares": 0,
+                        "value_usd": 0,  # Current is 0
+                        "prev_shares": prev_shares,
+                        "change_shares": -prev_shares,
+                        "change_pct": -100.0,
+                        "status": "Closed",
+                    }
+                )
 
         return JSONResponse(
             content={
@@ -264,8 +349,8 @@ def get_holdings(accession_no: str):
                 "filing_date": str(filing.filing_date),
                 "recent_filings": recent_list,
                 "company_details": company_details,
-                "sec_index_url": sec_index_url,  # <--- Return index URL
-                "sec_xml_url": sec_xml_url,  # <--- Return XML URL
+                "sec_index_url": sec_index_url,
+                "sec_xml_url": sec_xml_url,
                 "holdings": processed_holdings,
             }
         )
