@@ -1,3 +1,4 @@
+import pandas as pd
 import os
 
 os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
@@ -16,6 +17,30 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = FastAPI()
+
+cusip_to_ticker = {}
+pq_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ct.pq"
+)
+
+try:
+    if os.path.exists(pq_path):
+        # Load the parquet file
+        df = pd.read_parquet(pq_path)
+
+        # IMPORTANT: Change 'CUSIP' and 'Ticker' to the exact column names in your .pq file!
+        cusip_col = "Cusip"
+        ticker_col = "Ticker"
+
+        # Convert to a dictionary for lightning-fast lookups: { "037833100": "AAPL" }
+        cusip_to_ticker = dict(zip(df[cusip_col], df[ticker_col]))
+        print(f"Successfully loaded {len(cusip_to_ticker)} CUSIP mappings.")
+    else:
+        print(
+            "Warning: Parquet mapping file not found. Tickers will fallback to SEC names."
+        )
+except Exception as e:
+    print(f"Failed to load Parquet mapping: {e}")
 
 groq_client = Groq()
 
@@ -331,7 +356,8 @@ def get_holdings(accession_no: str):
         for h in previous_holdings:
             key = f"{h[12]}_{h[7]}"  # CUSIP + Put/Call flag
             if key not in prev_dict:
-                prev_dict[key] = {"shares": 0, "value_usd": 0, "ticker": h[11] or "N/A"}
+                # Store the SEC issuer name for historical reference
+                prev_dict[key] = {"shares": 0, "value_usd": 0, "issuer": h[11] or "N/A"}
             prev_dict[key]["shares"] += h[2]
             prev_dict[key]["value_usd"] += h[3]
 
@@ -368,9 +394,16 @@ def get_holdings(accession_no: str):
                 change_shares = current_shares - prev_shares
                 change_pct = (change_shares / prev_shares) * 100
 
+            # Separate the SEC Name and the Mapped Ticker
+            sec_name = h[11] or "N/A"
+            mapped_ticker = cusip_to_ticker.get(
+                cusip, "-"
+            )  # Show "-" if no ticker is found
+
             processed_holdings.append(
                 {
-                    "ticker": h[11] or "N/A",
+                    "ticker": mapped_ticker,
+                    "issuer": sec_name,  # <--- NEW SEPARATE FIELD
                     "cusip": cusip,
                     "class": h[4],
                     "share_type": h[5],
@@ -382,7 +415,7 @@ def get_holdings(accession_no: str):
                     "shares": current_shares,
                     "value_usd": current_value,
                     "prev_shares": prev_shares,
-                    "prev_value_usd": prev_value,  # <--- NEW DATA
+                    "prev_value_usd": prev_value,
                     "change_shares": change_shares,
                     "change_pct": round(change_pct, 2),
                     "status": status,
@@ -393,9 +426,13 @@ def get_holdings(accession_no: str):
         for key, prev_data in prev_dict.items():
             if key not in current_keys:
                 cusip, put_call = key.split("_")
+
+                mapped_ticker = cusip_to_ticker.get(cusip, "-")
+
                 processed_holdings.append(
                     {
-                        "ticker": prev_data["ticker"],
+                        "ticker": mapped_ticker,
+                        "issuer": prev_data["issuer"],  # <--- NEW SEPARATE FIELD
                         "cusip": cusip,
                         "class": "N/A",
                         "share_type": "N/A",
@@ -407,7 +444,7 @@ def get_holdings(accession_no: str):
                         "shares": 0,
                         "value_usd": 0,
                         "prev_shares": prev_data["shares"],
-                        "prev_value_usd": prev_data["value_usd"],  # <--- NEW DATA
+                        "prev_value_usd": prev_data["value_usd"],
                         "change_shares": -prev_data["shares"],
                         "change_pct": -100.0,
                         "status": "Closed",

@@ -170,8 +170,10 @@
                 <thead>
                     <tr>
                         <th onclick="sortStocks('ticker')">Ticker ↕</th>
+                        <th onclick="sortStocks('issuer')">Issuer ↕</th> 
                         <th onclick="sortStocks('cusip')">CUSIP ↕</th>
-                        <th onclick="sortStocks('class')">Class ↕</th> <th onclick="sortStocks('weight_pct')">Port % ↕</th>
+                        <th onclick="sortStocks('class')">Class ↕</th> 
+                        <th onclick="sortStocks('weight_pct')">Port % ↕</th>
                         <th onclick="sortStocks('share_type')">Type ↕</th>
                         <th onclick="sortStocks('shares')" style="text-align: right;">Shares / PRN ↕</th>
                         <th onclick="sortStocks('value_usd')" style="text-align: right;">Value ($k) ↕</th>
@@ -434,7 +436,11 @@
         // ==========================================
         function handleSearch(e) {
             const q = e.target.value.toLowerCase();
-            const filterFn = h => h.ticker.toLowerCase().includes(q) || h.cusip.toLowerCase().includes(q) || h.class.toLowerCase().includes(q);
+            const filterFn = h => 
+                (h.ticker && h.ticker.toLowerCase().includes(q)) || 
+                (h.issuer && h.issuer.toLowerCase().includes(q)) || // <-- ADD THIS LINE
+                (h.cusip && h.cusip.toLowerCase().includes(q)) || 
+                (h.class && h.class.toLowerCase().includes(q));
             
             filteredStocks = allStocks.filter(filterFn);
             filteredOptions = allOptions.filter(filterFn);
@@ -475,8 +481,9 @@
 
             return `<tr style="${rowStyle}">
                 <td class="ticker">${h.ticker}</td>
-                <td class="mono">${h.cusip}</td>
-                <td>${h.class}</td> <td style="font-weight: bold; color: #444;">
+                <td style="font-weight: 500; color: #111;">${h.issuer}</td> <td class="mono">${h.cusip}</td>
+                <td>${h.class}</td>
+                <td style="font-weight: bold; color: #444;">
                     ${h.weight_pct}%<br>${weightDeltaHtml}
                 </td>
                 <td><span class="badge">${h.share_type}</span></td>
