@@ -4,6 +4,7 @@ annotated-types==0.7.0
 anyio==4.13.0
 beautifulsoup4==4.14.3
 certifi==2026.5.20
+click==8.4.0
 edgartools==5.31.3
 fastapi==0.136.1
 filelock==3.29.0
@@ -43,3 +44,4 @@ truststore==0.10.4
 typing-extensions==4.15.0
 typing-inspection==0.4.2
 unidecode==1.4.0
+uvicorn==0.47.0

@@ -6,125 +6,308 @@
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
         .header-container { display: flex; justify-content: space-between; align-items: center; }
-        #back-btn { display: none; padding: 6px 12px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 4px; font-weight: bold; }
-        #back-btn:hover { background: #0051a8; }
+        .btn-primary { padding: 6px 12px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        .btn-primary:hover { background: #0051a8; }
         
-        .screener-table { width: 100%; border-collapse: collapse; background: white; font-size: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-        .screener-table th { background: #d3d3d3; color: #000; padding: 6px; text-align: left; border: 1px solid #ccc; font-weight: bold; }
-        .screener-table td { padding: 4px 6px; border: 1px solid #eee; }
+        /* Layout Grid for Deep Dive View */
+        #holdings-view { display: none; }
+        .company-panel { background: white; padding: 15px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 4px solid #0070f3; }
+        .company-panel h2 { margin: 0 0 10px 0; font-size: 18px; }
+        .panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; font-size: 13px; }
+        .recent-link { color: #0070f3; cursor: pointer; text-decoration: underline; margin-right: 10px; }
+        
+        /* Toolbar */
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        #search-input { padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 250px; font-family: monospace;}
+        
+        .screener-table { width: 100%; border-collapse: collapse; background: white; font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .screener-table th { background: #d3d3d3; color: #000; padding: 6px; text-align: left; border: 1px solid #ccc; font-weight: bold; cursor: pointer; user-select: none; }
+        .screener-table th:hover { background: #bbb; }
+        .screener-table td { padding: 4px 6px; border: 1px solid #eee; white-space: nowrap; }
         .screener-table tbody tr:nth-child(even) { background-color: #f9f9f9; }
-        .screener-table tbody tr:hover { background-color: #e8f4f8; cursor: pointer; }
+        .screener-table tbody tr:hover { background-color: #e8f4f8; }
         
-        .ticker { font-weight: bold; color: #1a0dab; text-decoration: none; font-family: monospace; font-size: 13px;}
-        .cusip { color: #555; font-family: monospace; }
-        .loading { text-align: center; padding: 20px; font-style: italic; color: #666; }
+        .ticker { font-weight: bold; color: #1a0dab; font-family: monospace; font-size: 12px;}
+        .mono { font-family: monospace; color: #444; }
+        .num { text-align: right; font-family: monospace; }
+        .loading { text-align: center; padding: 20px; font-style: italic; color: #666; font-size: 14px; }
+        .badge { background: #e0e0e0; padding: 2px 4px; border-radius: 3px; font-size: 10px; font-weight: bold; }
+        .badge-put { background: #ffebee; color: #c62828; }
+        .badge-call { background: #e8f5e9; color: #2e7d32; }
+        
+        .pagination { margin-top: 15px; display: flex; justify-content: space-between; align-items: center; }
+        .page-btn { padding: 6px 12px; cursor: pointer; background: white; border: 1px solid #ccc; border-radius: 4px; font-weight: bold; }
+        .page-btn:disabled { color: #aaa; cursor: not-allowed; }
     </style>
 </head>
 <body>
     <div class="header-container">
         <h3 id="page-title">Latest 13F-HR Filings</h3>
-        <button id="back-btn" onclick="loadFilings()">← Back to Filings</button>
+        <button id="back-btn" class="btn-primary" style="display:none;" onclick="showFilingsView()">← Back to Filings</button>
     </div>
 
-    <table class="screener-table" id="data-table">
-        <thead id="table-head">
-            <!-- Headers injected here -->
-        </thead>
-        <tbody id="table-body">
-            <!-- Data injected here -->
-        </tbody>
-    </table>
+    <!-- VIEW 1: FILINGS LIST -->
+    <div id="filings-view">
+        <div style="overflow-x: auto;">
+            <table class="screener-table">
+                <thead>
+                    <tr><th>No.</th><th>Fund / Company</th><th>CIK</th><th>Filing Date</th><th>Accession No.</th></tr>
+                </thead>
+                <tbody id="filings-body"></tbody>
+            </table>
+        </div>
+        <div class="pagination" id="filings-pagination">
+            <button id="f-prev" class="page-btn" onclick="changeFilingsPage(-1)">← Previous</button>
+            <span id="f-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
+            <button id="f-next" class="page-btn" onclick="changeFilingsPage(1)">Next →</button>
+        </div>
+    </div>
+
+    <!-- VIEW 2: DEEP DIVE HOLDINGS -->
+    <div id="holdings-view">
+        <div class="company-panel">
+            <h2 id="c-name">-</h2>
+            <div class="panel-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+                <div>
+                    <strong>CIK:</strong> <span id="c-cik" class="mono">-</span><br>
+                    <strong>Accession:</strong> <span id="c-acc" class="mono">-</span><br>
+                    <strong>Filing Date:</strong> <span id="c-date">-</span><br>
+                    <!-- New SEC Links -->
+                    <strong>Source Docs:</strong> 
+                    <a id="c-link-index" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Index HTML</a> | 
+                    <a id="c-link-xml" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Raw XML</a>
+                </div>
+                <div>
+                    <strong>Category:</strong> <span id="c-cat">-</span><br>
+                    <strong>Fiscal Year:</strong> <span id="c-fye">-</span><br>
+                    <strong>Incorporated:</strong> <span id="c-inc">-</span><br>
+                    <strong>Phone:</strong> <span id="c-phone">-</span><br>
+                    <strong>Address:</strong> <span id="c-add">-</span>
+                </div>
+                <div>
+                    <strong>Recent 13F-HRs:</strong><br>
+                    <div id="c-recent"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="toolbar">
+            <input type="text" id="search-input" placeholder="Search Ticker, CUSIP, or Class..." onkeyup="handleSearch(event)">
+            <strong style="font-size: 12px; color: #555;">Total Rows: <span id="h-total">0</span></strong>
+        </div>
+
+        <div style="overflow-x: auto;">
+            <table class="screener-table">
+                <thead>
+                    <tr>
+                        <th onclick="sortHoldings('ticker')">Ticker ↕</th>
+                        <th onclick="sortHoldings('cusip')">CUSIP ↕</th>
+                        <th onclick="sortHoldings('class')">Class ↕</th>
+                        <th onclick="sortHoldings('share_type')">Type ↕</th>
+                        <th onclick="sortHoldings('shares')" style="text-align: right;">Shares / PRN ↕</th>
+                        <th onclick="sortHoldings('value_usd')" style="text-align: right;">Value ($k) ↕</th>
+                        <th onclick="sortHoldings('discretion')">Discr ↕</th>
+                        <th onclick="sortHoldings('put_call')">Option ↕</th>
+                    </tr>
+                </thead>
+                <tbody id="holdings-body"></tbody>
+            </table>
+        </div>
+        <div class="pagination">
+            <button id="h-prev" class="page-btn" onclick="changeHoldingsPage(-1)">← Previous</button>
+            <span id="h-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
+            <button id="h-next" class="page-btn" onclick="changeHoldingsPage(1)">Next →</button>
+        </div>
+    </div>
 
     <script>
-        const tableHead = document.getElementById('table-head');
-        const tableBody = document.getElementById('table-body');
-        const pageTitle = document.getElementById('page-title');
+        // --- FILINGS STATE ---
+        let currentFilingsPage = 1;
+
+        // --- HOLDINGS STATE ---
+        let allHoldings = [];
+        let filteredHoldings = [];
+        let currentHoldingsPage = 1;
+        let sortCol = 'value_usd';
+        let sortAsc = false; // Default: Largest value first
+
+        // --- DOM Elements ---
+        const vFilings = document.getElementById('filings-view');
+        const vHoldings = document.getElementById('holdings-view');
         const backBtn = document.getElementById('back-btn');
+        const pageTitle = document.getElementById('page-title');
 
-        // 1. Load the list of funds (Default View)
-        function loadFilings() {
+        // ==========================================
+        // ROUTING & VIEWS
+        // ==========================================
+        function showFilingsView() {
+            vHoldings.style.display = 'none';
+            vFilings.style.display = 'block';
+            backBtn.style.display = 'none';
             pageTitle.innerText = "Latest 13F-HR Filings";
-            backBtn.style.display = "none";
-            
-            tableHead.innerHTML = `<tr>
-                <th>No.</th>
-                <th>Fund / Company</th>
-                <th>CIK</th>
-                <th>Filing Date</th>
-                <th>Accession No.</th>
-            </tr>`;
-            tableBody.innerHTML = `<tr><td colspan="5" class="loading">Loading latest filings...</td></tr>`;
-
-            fetch('/api/filings')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.error) throw new Error(data.error);
-                    tableBody.innerHTML = '';
-                    
-                    data.filings.forEach((filing, index) => {
-                        // Clicking a row triggers loadHoldings for that specific filing
-                        const row = `<tr onclick="loadHoldings('${filing.accession_no}')">
-                            <td>${index + 1}</td>
-                            <td style="font-weight: bold;">${filing.company}</td>
-                            <td>${filing.cik}</td>
-                            <td>${filing.date}</td>
-                            <td class="cusip">${filing.accession_no}</td>
-                        </tr>`;
-                        tableBody.innerHTML += row;
-                    });
-                })
-                .catch(err => {
-                    tableBody.innerHTML = `<tr><td colspan="5" style="color: red; text-align: center;">Error: ${err.message}</td></tr>`;
-                });
+            loadFilings(currentFilingsPage);
         }
 
-        // 2. Load the stock holdings for a specific fund (Deep Dive View)
-        function loadHoldings(accessionNo) {
-            pageTitle.innerText = "Loading Holdings...";
-            backBtn.style.display = "block";
-            
-            tableHead.innerHTML = `<tr>
-                <th>No.</th>
-                <th>Ticker/Issuer</th>
-                <th>CUSIP</th>
-                <th>Class</th>
-                <th>Shares</th>
-                <th>Value (USD)</th>
-            </tr>`;
-            tableBody.innerHTML = `<tr><td colspan="6" class="loading">Parsing holdings for ${accessionNo}...</td></tr>`;
+        function showHoldingsView() {
+            vFilings.style.display = 'none';
+            vHoldings.style.display = 'block';
+            backBtn.style.display = 'block';
+            pageTitle.innerText = "Company Deep Dive";
+        }
+
+        // ==========================================
+        // FILINGS LOGIC
+        // ==========================================
+        function changeFilingsPage(dir) {
+            if (currentFilingsPage + dir > 0) loadFilings(currentFilingsPage + dir);
+        }
+
+        function loadFilings(page) {
+            currentFilingsPage = page;
+            document.getElementById('f-ind').innerText = `Page ${page}`;
+            document.getElementById('f-prev').disabled = page === 1;
+            const tbody = document.getElementById('filings-body');
+            tbody.innerHTML = `<tr><td colspan="5" class="loading">Loading page ${page}...</td></tr>`;
+
+            fetch(`/api/filings?page=${page}`)
+                .then(res => res.json())
+                .then(data => {
+                    tbody.innerHTML = '';
+                    document.getElementById('f-next').disabled = data.filings.length < 50;
+                    const offset = (page - 1) * 50;
+                    data.filings.forEach((f, i) => {
+                        tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                            <td>${offset + i + 1}</td>
+                            <td style="font-weight: bold;">${f.company}</td>
+                            <td class="mono">${f.cik}</td><td>${f.date}</td><td class="mono">${f.accession_no}</td>
+                        </tr>`;
+                    });
+                }).catch(err => tbody.innerHTML = `<tr><td colspan="5" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`);
+        }
+
+        // ==========================================
+        // HOLDINGS LOGIC
+        // ==========================================
+        function fetchHoldings(accessionNo) {
+            showHoldingsView();
+            document.getElementById('c-name').innerText = "Loading data...";
+            document.getElementById('holdings-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
+            document.getElementById('search-input').value = "";
 
             fetch(`/api/holdings/${accessionNo}`)
                 .then(res => res.json())
                 .then(data => {
-                    if (data.error) throw new Error(data.error);
+                    if(data.error) throw new Error(data.error);
                     
-                    pageTitle.innerText = `Holdings: ${data.company}`;
-                    tableBody.innerHTML = '';
-                    
-                    if (!data.holdings || data.holdings.length === 0) {
-                        tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center;">No stock holdings found in this filing.</td></tr>`;
-                        return;
-                    }
+                    // Populate Standard Company Identifiers
+                    document.getElementById('c-name').innerText = data.company;
+                    document.getElementById('c-cik').innerText = data.cik;
+                    document.getElementById('c-date').innerText = data.filing_date;
+                    document.getElementById('c-acc').innerText = accessionNo;
 
-                    data.holdings.forEach((holding, index) => {
-                        const row = `<tr>
-                            <td>${index + 1}</td>
-                            <td class="ticker">${holding.ticker}</td>
-                            <td class="cusip">${holding.cusip}</td>
-                            <td>${holding.class}</td>
-                            <td>${holding.shares.toLocaleString()}</td>
-                            <td>$${holding.value_usd.toLocaleString()}</td>
-                        </tr>`;
-                        tableBody.innerHTML += row;
-                    });
-                })
-                .catch(err => {
-                    tableBody.innerHTML = `<tr><td colspan="6" style="color: red; text-align: center;">Error: ${err.message}</td></tr>`;
-                });
+                    document.getElementById('c-link-index').href = data.sec_index_url;
+                    document.getElementById('c-link-xml').href = data.sec_xml_url;
+                    
+                    // Populate New Entity Metadata
+                    const cd = data.company_details;
+                    document.getElementById('c-cat').innerText = cd ? cd.category : "N/A";
+                    document.getElementById('c-fye').innerText = cd ? cd.fiscal_year : "N/A";
+                    document.getElementById('c-inc').innerText = cd ? cd.incorporated : "N/A";
+                    document.getElementById('c-phone').innerText = cd ? cd.phone : "N/A";
+                    document.getElementById('c-add').innerText = cd ? cd.address : "N/A";
+                    
+                    // Populate Recent Filings Links
+                    const recentDiv = document.getElementById('c-recent');
+                    recentDiv.innerHTML = data.recent_filings.map(rf => 
+                        `<span class="recent-link" onclick="fetchHoldings('${rf.accession_no}')">${rf.date}</span>`
+                    ).join(' | ');
+
+                    // Setup Holdings Data & Sort
+                    allHoldings = data.holdings;
+                    filteredHoldings = [...allHoldings];
+                    sortCol = 'value_usd'; sortAsc = false;
+                    executeSort();
+                }).catch(err => document.getElementById('holdings-body').innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`);
         }
 
-        // Initialize the app
-        loadFilings();
+        function handleSearch(e) {
+            const q = e.target.value.toLowerCase();
+            filteredHoldings = allHoldings.filter(h => 
+                h.ticker.toLowerCase().includes(q) || 
+                h.cusip.toLowerCase().includes(q) ||
+                h.class.toLowerCase().includes(q)
+            );
+            currentHoldingsPage = 1;
+            executeSort();
+        }
+
+        function sortHoldings(col) {
+            if (sortCol === col) sortAsc = !sortAsc;
+            else { sortCol = col; sortAsc = true; }
+            executeSort();
+        }
+
+        function executeSort() {
+            filteredHoldings.sort((a, b) => {
+                let vA = a[sortCol]; let vB = b[sortCol];
+                if (typeof vA === 'string') vA = vA.toLowerCase();
+                if (typeof vB === 'string') vB = vB.toLowerCase();
+                
+                if (vA < vB) return sortAsc ? -1 : 1;
+                if (vA > vB) return sortAsc ? 1 : -1;
+                return 0;
+            });
+            currentHoldingsPage = 1;
+            renderHoldingsTable();
+        }
+
+        function changeHoldingsPage(dir) {
+            const maxPage = Math.ceil(filteredHoldings.length / 50);
+            if (currentHoldingsPage + dir > 0 && currentHoldingsPage + dir <= maxPage) {
+                currentHoldingsPage += dir;
+                renderHoldingsTable();
+            }
+        }
+
+        function renderHoldingsTable() {
+            const tbody = document.getElementById('holdings-body');
+            document.getElementById('h-total').innerText = filteredHoldings.length.toLocaleString();
+            document.getElementById('h-ind').innerText = `Page ${currentHoldingsPage}`;
+            
+            const totalPages = Math.ceil(filteredHoldings.length / 50) || 1;
+            document.getElementById('h-prev').disabled = currentHoldingsPage === 1;
+            document.getElementById('h-next').disabled = currentHoldingsPage === totalPages;
+
+            tbody.innerHTML = '';
+            
+            if (filteredHoldings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching holdings found.</td></tr>`;
+                return;
+            }
+
+            const start = (currentHoldingsPage - 1) * 50;
+            const pageData = filteredHoldings.slice(start, start + 50);
+
+            pageData.forEach(h => {
+                let optBadge = `<span class="badge">${h.put_call}</span>`;
+                if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
+                if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
+
+                tbody.innerHTML += `<tr>
+                    <td class="ticker">${h.ticker}</td>
+                    <td class="mono">${h.cusip}</td>
+                    <td>${h.class}</td>
+                    <td><span class="badge">${h.share_type}</span></td>
+                    <td class="num">${h.shares.toLocaleString()}</td>
+                    <td class="num">$${h.value_usd.toLocaleString()}</td>
+                    <td><span class="badge">${h.discretion}</span></td>
+                    <td>${optBadge}</td>
+                </tr>`;
+            });
+        }
+
+        // Initialize App
+        showFilingsView();
     </script>
 </body>
 </html>
