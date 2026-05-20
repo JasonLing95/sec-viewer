@@ -1,3 +1,7 @@
+import os
+
+os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from edgar import set_identity, get_filings
