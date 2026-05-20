@@ -8,7 +8,60 @@ from fastapi.staticfiles import StaticFiles
 from edgar import set_identity, get_filings, get_by_accession_number, Company
 from lxml import etree
 
+from groq import Groq
+from pydantic import BaseModel
+from typing import List, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
 app = FastAPI()
+
+groq_client = Groq()
+
+
+class SummaryRequest(BaseModel):
+    company_name: str
+    holdings: List[dict]
+    user_prompt: Optional[str] = (
+        "Provide a high-level summary of this portfolio's top holdings, major directional bets, and options positioning."
+    )
+
+
+@app.post("/api/summarize-portfolio")
+def summarize_portfolio(data: SummaryRequest):
+    try:
+        # 1. Convert the JSON holdings array into a dense text format for the LLM
+        # This reduces tokens and keeps processing fast
+        dense_portfolio_text = ""
+        for h in data.holdings[:200]:  # Cap at top 200 rows to optimize context limits
+            opt_str = f" [{h['put_call']}]" if h["put_call"] != "NONE" else ""
+            dense_portfolio_text += f"Ticker: {h['ticker']}{opt_str} | Value: ${h['value_usd']}k | Shares: {h['shares']} | Type: {h['share_type']}\n"
+
+        # 2. Build the structural engineering prompt
+        system_instructions = (
+            f"You are an expert financial analyst examining the latest 13F-HR regulatory SEC filing for {data.company_name}.\n"
+            "Analyze the data provided. Be concrete, specific, and prioritize listing notable stock tickers, "
+            "large dollar movements, and option leverage (puts/calls). Keep formatting clean and dense like Finviz."
+        )
+
+        # 3. Fire the request to Groq using the Llama-3.3 model
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_instructions},
+                {
+                    "role": "user",
+                    "content": f"{data.user_prompt}\n\nHere is the raw portfolio data:\n{dense_portfolio_text}",
+                },
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,  # Low temperature keeps financial facts highly stable
+        )
+
+        return JSONResponse(content={"summary": completion.choices[0].message.content})
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 def gather_holdings_using_lxml(tables, ns, cik, accession_number) -> list[list]:

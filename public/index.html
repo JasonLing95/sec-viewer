@@ -3,22 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <title>13F-HR Screener</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
         .header-container { display: flex; justify-content: space-between; align-items: center; }
         .btn-primary { padding: 6px 12px; cursor: pointer; background: #0070f3; color: white; border: none; border-radius: 4px; font-weight: bold; }
         .btn-primary:hover { background: #0051a8; }
         
-        /* Layout Grid for Deep Dive View */
         #holdings-view { display: none; }
         .company-panel { background: white; padding: 15px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 4px solid #0070f3; }
         .company-panel h2 { margin: 0 0 10px 0; font-size: 18px; }
-        .panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; font-size: 13px; }
+        .panel-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; font-size: 13px; }
         .recent-link { color: #0070f3; cursor: pointer; text-decoration: underline; margin-right: 10px; }
         
-        /* Toolbar */
-        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        #search-input { padding: 6px; border: 1px solid #ccc; border-radius: 4px; width: 250px; font-family: monospace;}
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; background: #fff; padding: 10px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);}
+        #search-input { padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 300px; font-family: monospace; font-size: 14px;}
+        
+        .table-header { margin-top: 25px; margin-bottom: 10px; border-bottom: 2px solid #ccc; padding-bottom: 5px; font-size: 16px; display: flex; justify-content: space-between; align-items: flex-end;}
         
         .screener-table { width: 100%; border-collapse: collapse; background: white; font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .screener-table th { background: #d3d3d3; color: #000; padding: 6px; text-align: left; border: 1px solid #ccc; font-weight: bold; cursor: pointer; user-select: none; }
@@ -35,9 +36,14 @@
         .badge-put { background: #ffebee; color: #c62828; }
         .badge-call { background: #e8f5e9; color: #2e7d32; }
         
-        .pagination { margin-top: 15px; display: flex; justify-content: space-between; align-items: center; }
-        .page-btn { padding: 6px 12px; cursor: pointer; background: white; border: 1px solid #ccc; border-radius: 4px; font-weight: bold; }
+        .pagination { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .page-btn { padding: 4px 10px; cursor: pointer; background: white; border: 1px solid #ccc; border-radius: 4px; font-weight: bold; font-size: 12px;}
         .page-btn:disabled { color: #aaa; cursor: not-allowed; }
+
+        /* Add to your <style> section */
+        #summary-output p { margin-top: 0; margin-bottom: 10px; }
+        #summary-output ul { margin-top: 0; padding-left: 20px; }
+        #summary-output strong { color: #111; }
     </style>
 </head>
 <body>
@@ -67,12 +73,11 @@
     <div id="holdings-view">
         <div class="company-panel">
             <h2 id="c-name">-</h2>
-            <div class="panel-grid" style="grid-template-columns: 1fr 1fr 1fr;">
+            <div class="panel-grid">
                 <div>
                     <strong>CIK:</strong> <span id="c-cik" class="mono">-</span><br>
                     <strong>Accession:</strong> <span id="c-acc" class="mono">-</span><br>
                     <strong>Filing Date:</strong> <span id="c-date">-</span><br>
-                    <!-- New SEC Links -->
                     <strong>Source Docs:</strong> 
                     <a id="c-link-index" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Index HTML</a> | 
                     <a id="c-link-xml" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Raw XML</a>
@@ -93,30 +98,74 @@
 
         <div class="toolbar">
             <input type="text" id="search-input" placeholder="Search Ticker, CUSIP, or Class..." onkeyup="handleSearch(event)">
-            <strong style="font-size: 12px; color: #555;">Total Rows: <span id="h-total">0</span></strong>
+            <strong style="font-size: 13px; color: #333;">Master Search filter applied to both tables</strong>
         </div>
 
+        <!-- Simplified AI Summary Box Component -->
+        <div style="background: white; padding: 15px; margin-bottom: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-top: 3px solid #2e7d32;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <strong style="font-size: 14px;">AI Filing Insights (Llama 3.3)</strong>
+                <button id="ai-btn" class="btn-primary" style="background: #2e7d32;" onclick="triggerAiSummary()">Summarize with AI</button>
+            </div>
+            <div id="summary-output" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 12px; font-size: 13px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; color: #666; line-height: 1.5; font-style: italic;">
+                Click the button above to generate a strategic breakdown of this portfolio's top holdings, directional bets, and options exposure.
+            </div>
+        </div>
+
+        <!-- STOCKS TABLE -->
+        <div class="table-header">
+            <strong>Equities & Common Stock</strong>
+            <span style="font-size: 12px; font-weight: normal;">Rows: <span id="s-total">0</span></span>
+        </div>
         <div style="overflow-x: auto;">
             <table class="screener-table">
                 <thead>
                     <tr>
-                        <th onclick="sortHoldings('ticker')">Ticker ↕</th>
-                        <th onclick="sortHoldings('cusip')">CUSIP ↕</th>
-                        <th onclick="sortHoldings('class')">Class ↕</th>
-                        <th onclick="sortHoldings('share_type')">Type ↕</th>
-                        <th onclick="sortHoldings('shares')" style="text-align: right;">Shares / PRN ↕</th>
-                        <th onclick="sortHoldings('value_usd')" style="text-align: right;">Value ($k) ↕</th>
-                        <th onclick="sortHoldings('discretion')">Discr ↕</th>
-                        <th onclick="sortHoldings('put_call')">Option ↕</th>
+                        <th onclick="sortStocks('ticker')">Ticker ↕</th>
+                        <th onclick="sortStocks('cusip')">CUSIP ↕</th>
+                        <th onclick="sortStocks('class')">Class ↕</th>
+                        <th onclick="sortStocks('share_type')">Type ↕</th>
+                        <th onclick="sortStocks('shares')" style="text-align: right;">Shares / PRN ↕</th>
+                        <th onclick="sortStocks('value_usd')" style="text-align: right;">Value ($k) ↕</th>
+                        <th onclick="sortStocks('discretion')">Discr ↕</th>
+                        <th>Option</th>
                     </tr>
                 </thead>
-                <tbody id="holdings-body"></tbody>
+                <tbody id="stocks-body"></tbody>
             </table>
         </div>
         <div class="pagination">
-            <button id="h-prev" class="page-btn" onclick="changeHoldingsPage(-1)">← Previous</button>
-            <span id="h-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
-            <button id="h-next" class="page-btn" onclick="changeHoldingsPage(1)">Next →</button>
+            <button id="s-prev" class="page-btn" onclick="changeStocksPage(-1)">← Previous</button>
+            <span id="s-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
+            <button id="s-next" class="page-btn" onclick="changeStocksPage(1)">Next →</button>
+        </div>
+
+        <!-- OPTIONS TABLE -->
+        <div class="table-header">
+            <strong>Options (Calls & Puts)</strong>
+            <span style="font-size: 12px; font-weight: normal;">Rows: <span id="o-total">0</span></span>
+        </div>
+        <div style="overflow-x: auto;">
+            <table class="screener-table">
+                <thead>
+                    <tr>
+                        <th onclick="sortOptions('ticker')">Ticker ↕</th>
+                        <th onclick="sortOptions('cusip')">CUSIP ↕</th>
+                        <th onclick="sortOptions('class')">Class ↕</th>
+                        <th onclick="sortOptions('share_type')">Type ↕</th>
+                        <th onclick="sortOptions('shares')" style="text-align: right;">Shares ↕</th>
+                        <th onclick="sortOptions('value_usd')" style="text-align: right;">Value ($k) ↕</th>
+                        <th onclick="sortOptions('discretion')">Discr ↕</th>
+                        <th onclick="sortOptions('put_call')">Option ↕</th>
+                    </tr>
+                </thead>
+                <tbody id="options-body"></tbody>
+            </table>
+        </div>
+        <div class="pagination">
+            <button id="o-prev" class="page-btn" onclick="changeOptionsPage(-1)">← Previous</button>
+            <span id="o-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
+            <button id="o-next" class="page-btn" onclick="changeOptionsPage(1)">Next →</button>
         </div>
     </div>
 
@@ -124,35 +173,30 @@
         // --- FILINGS STATE ---
         let currentFilingsPage = 1;
 
-        // --- HOLDINGS STATE ---
-        let allHoldings = [];
-        let filteredHoldings = [];
-        let currentHoldingsPage = 1;
-        let sortCol = 'value_usd';
-        let sortAsc = false; // Default: Largest value first
+        // --- STOCKS STATE ---
+        let allStocks = []; let filteredStocks = []; let currentStocksPage = 1;
+        let sortColStocks = 'value_usd'; let sortAscStocks = false;
 
-        // --- DOM Elements ---
-        const vFilings = document.getElementById('filings-view');
-        const vHoldings = document.getElementById('holdings-view');
-        const backBtn = document.getElementById('back-btn');
-        const pageTitle = document.getElementById('page-title');
+        // --- OPTIONS STATE ---
+        let allOptions = []; let filteredOptions = []; let currentOptionsPage = 1;
+        let sortColOptions = 'value_usd'; let sortAscOptions = false;
 
         // ==========================================
         // ROUTING & VIEWS
         // ==========================================
         function showFilingsView() {
-            vHoldings.style.display = 'none';
-            vFilings.style.display = 'block';
-            backBtn.style.display = 'none';
-            pageTitle.innerText = "Latest 13F-HR Filings";
+            document.getElementById('holdings-view').style.display = 'none';
+            document.getElementById('filings-view').style.display = 'block';
+            document.getElementById('back-btn').style.display = 'none';
+            document.getElementById('page-title').innerText = "Latest 13F-HR Filings";
             loadFilings(currentFilingsPage);
         }
 
         function showHoldingsView() {
-            vFilings.style.display = 'none';
-            vHoldings.style.display = 'block';
-            backBtn.style.display = 'block';
-            pageTitle.innerText = "Company Deep Dive";
+            document.getElementById('filings-view').style.display = 'none';
+            document.getElementById('holdings-view').style.display = 'block';
+            document.getElementById('back-btn').style.display = 'block';
+            document.getElementById('page-title').innerText = "Company Deep Dive";
         }
 
         // ==========================================
@@ -186,12 +230,13 @@
         }
 
         // ==========================================
-        // HOLDINGS LOGIC
+        // FETCH AND SPLIT HOLDINGS
         // ==========================================
         function fetchHoldings(accessionNo) {
             showHoldingsView();
             document.getElementById('c-name').innerText = "Loading data...";
-            document.getElementById('holdings-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
+            document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
+            document.getElementById('options-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
             document.getElementById('search-input').value = "";
 
             fetch(`/api/holdings/${accessionNo}`)
@@ -199,16 +244,13 @@
                 .then(data => {
                     if(data.error) throw new Error(data.error);
                     
-                    // Populate Standard Company Identifiers
                     document.getElementById('c-name').innerText = data.company;
                     document.getElementById('c-cik').innerText = data.cik;
                     document.getElementById('c-date').innerText = data.filing_date;
                     document.getElementById('c-acc').innerText = accessionNo;
-
                     document.getElementById('c-link-index').href = data.sec_index_url;
                     document.getElementById('c-link-xml').href = data.sec_xml_url;
                     
-                    // Populate New Entity Metadata
                     const cd = data.company_details;
                     document.getElementById('c-cat').innerText = cd ? cd.category : "N/A";
                     document.getElementById('c-fye').innerText = cd ? cd.fiscal_year : "N/A";
@@ -216,93 +258,197 @@
                     document.getElementById('c-phone').innerText = cd ? cd.phone : "N/A";
                     document.getElementById('c-add').innerText = cd ? cd.address : "N/A";
                     
-                    // Populate Recent Filings Links
-                    const recentDiv = document.getElementById('c-recent');
-                    recentDiv.innerHTML = data.recent_filings.map(rf => 
+                    document.getElementById('c-recent').innerHTML = data.recent_filings.map(rf => 
                         `<span class="recent-link" onclick="fetchHoldings('${rf.accession_no}')">${rf.date}</span>`
                     ).join(' | ');
 
-                    // Setup Holdings Data & Sort
-                    allHoldings = data.holdings;
-                    filteredHoldings = [...allHoldings];
-                    sortCol = 'value_usd'; sortAsc = false;
-                    executeSort();
-                }).catch(err => document.getElementById('holdings-body').innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`);
+                    // SPLIT DATA INTO STOCKS AND OPTIONS
+                    allStocks = data.holdings.filter(h => h.put_call === 'NONE' || !h.put_call);
+                    allOptions = data.holdings.filter(h => h.put_call === 'PUT' || h.put_call === 'CALL');
+                    
+                    filteredStocks = [...allStocks];
+                    filteredOptions = [...allOptions];
+                    
+                    sortColStocks = 'value_usd'; sortAscStocks = false;
+                    sortColOptions = 'value_usd'; sortAscOptions = false;
+                    
+                    executeSortStocks();
+                    executeSortOptions();
+                }).catch(err => {
+                    document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+                    document.getElementById('options-body').innerHTML = '';
+                });
         }
 
+        // ==========================================
+        // SHARED LOGIC (SEARCH & ROW HTML)
+        // ==========================================
         function handleSearch(e) {
             const q = e.target.value.toLowerCase();
-            filteredHoldings = allHoldings.filter(h => 
-                h.ticker.toLowerCase().includes(q) || 
-                h.cusip.toLowerCase().includes(q) ||
-                h.class.toLowerCase().includes(q)
-            );
-            currentHoldingsPage = 1;
-            executeSort();
+            const filterFn = h => h.ticker.toLowerCase().includes(q) || h.cusip.toLowerCase().includes(q) || h.class.toLowerCase().includes(q);
+            
+            filteredStocks = allStocks.filter(filterFn);
+            filteredOptions = allOptions.filter(filterFn);
+            
+            currentStocksPage = 1; currentOptionsPage = 1;
+            executeSortStocks(); executeSortOptions();
         }
 
-        function sortHoldings(col) {
-            if (sortCol === col) sortAsc = !sortAsc;
-            else { sortCol = col; sortAsc = true; }
-            executeSort();
+        function createRowHtml(h) {
+            let optBadge = `<span style="color:#aaa;">-</span>`;
+            if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
+            if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
+
+            return `<tr>
+                <td class="ticker">${h.ticker}</td>
+                <td class="mono">${h.cusip}</td>
+                <td>${h.class}</td>
+                <td><span class="badge">${h.share_type}</span></td>
+                <td class="num">${h.shares.toLocaleString()}</td>
+                <td class="num">$${h.value_usd.toLocaleString()}</td>
+                <td><span class="badge">${h.discretion}</span></td>
+                <td>${optBadge}</td>
+            </tr>`;
         }
 
-        function executeSort() {
-            filteredHoldings.sort((a, b) => {
-                let vA = a[sortCol]; let vB = b[sortCol];
+        // ==========================================
+        // STOCKS TABLE LOGIC
+        // ==========================================
+        function sortStocks(col) {
+            if (sortColStocks === col) sortAscStocks = !sortAscStocks;
+            else { sortColStocks = col; sortAscStocks = true; }
+            executeSortStocks();
+        }
+
+        function executeSortStocks() {
+            filteredStocks.sort((a, b) => {
+                let vA = a[sortColStocks]; let vB = b[sortColStocks];
                 if (typeof vA === 'string') vA = vA.toLowerCase();
                 if (typeof vB === 'string') vB = vB.toLowerCase();
-                
-                if (vA < vB) return sortAsc ? -1 : 1;
-                if (vA > vB) return sortAsc ? 1 : -1;
+                if (vA < vB) return sortAscStocks ? -1 : 1;
+                if (vA > vB) return sortAscStocks ? 1 : -1;
                 return 0;
             });
-            currentHoldingsPage = 1;
-            renderHoldingsTable();
+            currentStocksPage = 1;
+            renderStocksTable();
         }
 
-        function changeHoldingsPage(dir) {
-            const maxPage = Math.ceil(filteredHoldings.length / 50);
-            if (currentHoldingsPage + dir > 0 && currentHoldingsPage + dir <= maxPage) {
-                currentHoldingsPage += dir;
-                renderHoldingsTable();
+        function changeStocksPage(dir) {
+            const maxPage = Math.ceil(filteredStocks.length / 50);
+            if (currentStocksPage + dir > 0 && currentStocksPage + dir <= maxPage) {
+                currentStocksPage += dir; renderStocksTable();
             }
         }
 
-        function renderHoldingsTable() {
-            const tbody = document.getElementById('holdings-body');
-            document.getElementById('h-total').innerText = filteredHoldings.length.toLocaleString();
-            document.getElementById('h-ind').innerText = `Page ${currentHoldingsPage}`;
+        function renderStocksTable() {
+            const tbody = document.getElementById('stocks-body');
+            document.getElementById('s-total').innerText = filteredStocks.length.toLocaleString();
+            document.getElementById('s-ind').innerText = `Page ${currentStocksPage}`;
             
-            const totalPages = Math.ceil(filteredHoldings.length / 50) || 1;
-            document.getElementById('h-prev').disabled = currentHoldingsPage === 1;
-            document.getElementById('h-next').disabled = currentHoldingsPage === totalPages;
+            const totalPages = Math.ceil(filteredStocks.length / 50) || 1;
+            document.getElementById('s-prev').disabled = currentStocksPage === 1;
+            document.getElementById('s-next').disabled = currentStocksPage === totalPages;
 
             tbody.innerHTML = '';
-            
-            if (filteredHoldings.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching holdings found.</td></tr>`;
+            if (filteredStocks.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching stock holdings found.</td></tr>`;
                 return;
             }
 
-            const start = (currentHoldingsPage - 1) * 50;
-            const pageData = filteredHoldings.slice(start, start + 50);
+            const start = (currentStocksPage - 1) * 50;
+            filteredStocks.slice(start, start + 50).forEach(h => tbody.innerHTML += createRowHtml(h));
+        }
 
-            pageData.forEach(h => {
-                let optBadge = `<span class="badge">${h.put_call}</span>`;
-                if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
-                if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
+        // ==========================================
+        // OPTIONS TABLE LOGIC
+        // ==========================================
+        function sortOptions(col) {
+            if (sortColOptions === col) sortAscOptions = !sortAscOptions;
+            else { sortColOptions = col; sortAscOptions = true; }
+            executeSortOptions();
+        }
 
-                tbody.innerHTML += `<tr>
-                    <td class="ticker">${h.ticker}</td>
-                    <td class="mono">${h.cusip}</td>
-                    <td>${h.class}</td>
-                    <td><span class="badge">${h.share_type}</span></td>
-                    <td class="num">${h.shares.toLocaleString()}</td>
-                    <td class="num">$${h.value_usd.toLocaleString()}</td>
-                    <td><span class="badge">${h.discretion}</span></td>
-                    <td>${optBadge}</td>
-                </tr>`;
+        function executeSortOptions() {
+            filteredOptions.sort((a, b) => {
+                let vA = a[sortColOptions]; let vB = b[sortColOptions];
+                if (typeof vA === 'string') vA = vA.toLowerCase();
+                if (typeof vB === 'string') vB = vB.toLowerCase();
+                if (vA < vB) return sortAscOptions ? -1 : 1;
+                if (vA > vB) return sortAscOptions ? 1 : -1;
+                return 0;
+            });
+            currentOptionsPage = 1;
+            renderOptionsTable();
+        }
+
+        function changeOptionsPage(dir) {
+            const maxPage = Math.ceil(filteredOptions.length / 50);
+            if (currentOptionsPage + dir > 0 && currentOptionsPage + dir <= maxPage) {
+                currentOptionsPage += dir; renderOptionsTable();
+            }
+        }
+
+        function renderOptionsTable() {
+            const tbody = document.getElementById('options-body');
+            document.getElementById('o-total').innerText = filteredOptions.length.toLocaleString();
+            document.getElementById('o-ind').innerText = `Page ${currentOptionsPage}`;
+            
+            const totalPages = Math.ceil(filteredOptions.length / 50) || 1;
+            document.getElementById('o-prev').disabled = currentOptionsPage === 1;
+            document.getElementById('o-next').disabled = currentOptionsPage === totalPages;
+
+            tbody.innerHTML = '';
+            if (filteredOptions.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching option holdings found.</td></tr>`;
+                return;
+            }
+
+            const start = (currentOptionsPage - 1) * 50;
+            filteredOptions.slice(start, start + 50).forEach(h => tbody.innerHTML += createRowHtml(h));
+        }
+
+        function triggerAiSummary() {
+            const outputBox = document.getElementById('summary-output');
+            const aiBtn = document.getElementById('ai-btn');
+            
+            // Set loading text and disable button to prevent double submissions
+            aiBtn.disabled = true;
+            aiBtn.innerText = "Analyzing Portfolio...";
+            outputBox.innerText = "Llama 3.3 is parsing the filing matrix and evaluating concentration layout...";
+            outputBox.style.color = "#666";
+            outputBox.style.fontStyle = "italic";
+
+            // Combine the cached stocks and options data arrays together
+            const completeDataPayload = [...allStocks, ...allOptions];
+            const currentCompanyName = document.getElementById('c-name').innerText;
+
+            fetch('/api/summarize-portfolio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    company_name: currentCompanyName,
+                    holdings: completeDataPayload,
+                    user_prompt: "Provide a sharp, high-level summary of this portfolio's top structural holdings, major new directional bets, and options risk/leverage positioning."
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) throw new Error(data.error);
+                
+                // Use marked.parse() to convert markdown to HTML, and inject via innerHTML
+                outputBox.innerHTML = marked.parse(data.summary);
+                outputBox.style.color = "#333";
+                outputBox.style.fontStyle = "normal";
+            })
+            .catch(err => {
+                outputBox.innerText = `Analysis Failed: ${err.message}\nVerify that your local .env file contains a valid GROQ_API_KEY value.`;
+                outputBox.style.color = "red";
+                outputBox.style.fontStyle = "normal";
+            })
+            .finally(() => {
+                // Restore button back to actionable state
+                aiBtn.disabled = false;
+                aiBtn.innerText = "Summarize with AI";
             });
         }
 
