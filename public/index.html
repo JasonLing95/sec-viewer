@@ -50,6 +50,23 @@
         .status-dec { color: #c62828; }
         .status-closed { color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 4px; border-radius: 3px; font-size: 10px;}
         .status-same { color: #888; }
+
+        /* Tooltip Styles */
+        .tooltip { position: relative; display: inline-block; cursor: help; margin-left: 4px; margin-right: 6px; color: #888; font-size: 13px; font-weight: normal; }
+        .tooltip:hover { color: #0070f3; }
+        .tooltip .tooltip-text {
+            visibility: hidden; width: 220px; background-color: #222; color: #fff; text-align: left;
+            border-radius: 4px; padding: 8px 10px; position: absolute; z-index: 10;
+            bottom: 125%; left: 50%; margin-left: -110px; opacity: 0; transition: opacity 0.2s;
+            font-size: 11px; font-weight: normal; line-height: 1.4; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        /* Little triangle pointer at the bottom of the tooltip */
+        .tooltip .tooltip-text::after {
+            content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px;
+            border-width: 5px; border-style: solid; border-color: #222 transparent transparent transparent;
+        }
+        .tooltip:hover .tooltip-text { visibility: visible; opacity: 1; }
     </style>
 </head>
 <body>
@@ -94,6 +111,27 @@
                     <strong>Incorporated:</strong> <span id="c-inc">-</span><br>
                     <strong>Phone:</strong> <span id="c-phone">-</span><br>
                     <strong>Address:</strong> <span id="c-add">-</span>
+                </div>
+                <div>
+                    <strong>Total 13F AUM:</strong>
+                    <div class="tooltip">ⓘ<span class="tooltip-text">Total market value of all disclosed long U.S. equities and options in this filing. Does not include cash, short positions, or foreign assets.</span></div>
+                    <span id="c-aum" style="font-weight: bold; color: #111;">$-</span><br>
+
+                    <strong>Top 10 Concentration:</strong>
+                    <div class="tooltip">ⓘ<span class="tooltip-text">Percentage of the portfolio's total value concentrated in its 10 largest positions. A higher percentage indicates a high-conviction strategy.</span></div>
+                    <span id="c-concentration" style="font-weight: bold; color: #0070f3;">-%</span><br>
+
+                    <strong>Options Ratio:</strong>
+                    <div class="tooltip">ⓘ<span class="tooltip-text">Notional value of all Options (Calls/Puts) divided by Common Equity. A ratio greater than 0 indicates active hedging or leverage.</span></div>
+                    <span id="c-options" style="font-weight: bold; color: #555;">-</span><br>
+
+                    <strong>Turnover (QoQ):</strong>
+                    <div class="tooltip">ⓘ<span class="tooltip-text">Quarter-over-Quarter portfolio churn. Calculated as minimum(Buys, Sells) divided by Average AUM. High turnover implies active short-term trading.</span></div>
+                    <span id="c-turnover" style="font-weight: bold; color: #d32f2f;">-%</span><br>
+                    
+                    <div id="concentration-bar-wrapper" style="width: 100%; background: #e0e0e0; height: 6px; border-radius: 3px; margin-top: 4px; display: none;">
+                        <div id="concentration-bar" style="background: #0070f3; height: 100%; border-radius: 3px; width: 0%;"></div>
+                    </div>
                 </div>
                 <div>
                     <strong>Recent 13F-HRs:</strong><br>
@@ -272,6 +310,82 @@
                     // SPLIT DATA INTO STOCKS AND OPTIONS
                     allStocks = data.holdings.filter(h => h.put_call === 'NONE' || !h.put_call);
                     allOptions = data.holdings.filter(h => h.put_call === 'PUT' || h.put_call === 'CALL');
+
+                    // --- CALCULATE PORTFOLIO CONCENTRATION & TURNOVER STAGE ---
+                    const totalPortfolioValue = data.holdings.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    
+                    const totalEquityValue = allStocks.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    const totalOptionsValue = allOptions.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    let optionsRatio = "0.0x";
+                    if (totalEquityValue > 0) {
+                        optionsRatio = (totalOptionsValue / totalEquityValue).toFixed(2) + "x";
+                    }
+                    
+                    const sortedByValue = [...data.holdings].sort((a, b) => b.value_usd - a.value_usd);
+                    const top10Value = sortedByValue.slice(0, 10).reduce((sum, item) => sum + (item.value_usd || 0), 0);
+                    
+                    let concentrationPct = 0;
+                    if (totalPortfolioValue > 0) {
+                        concentrationPct = (top10Value / totalPortfolioValue) * 100;
+                    }
+
+                    // NEW: Calculate QoQ Portfolio Turnover
+                    let totalBuys = 0;
+                    let totalSells = 0;
+                    let prevTotalValue = 0;
+
+                    data.holdings.forEach(h => {
+                        prevTotalValue += (h.prev_value_usd || 0);
+                        
+                        if (h.status === 'New') {
+                            totalBuys += h.value_usd; // Full current value is a buy
+                        } else if (h.status === 'Increased') {
+                            // Estimate dollar amount bought based on current price proxy
+                            const pctAdded = h.change_shares / h.shares;
+                            totalBuys += (h.value_usd * pctAdded);
+                        } else if (h.status === 'Closed') {
+                            totalSells += h.prev_value_usd; // Full previous value is a sell
+                        } else if (h.status === 'Decreased') {
+                            // Estimate dollar amount sold based on previous price proxy
+                            const pctSold = Math.abs(h.change_shares) / h.prev_shares;
+                            totalSells += (h.prev_value_usd * pctSold);
+                        }
+
+                        // Calculate Portfolio Weight while we loop
+                        h.weight_pct = totalPortfolioValue > 0 ? ((h.value_usd / totalPortfolioValue) * 100).toFixed(2) : 0;
+                    });
+
+                    // Turnover Formula: min(Buys, Sells) / Average AUM
+                    let turnoverPct = 0;
+                    let hasHistory = prevTotalValue > 0;
+                    if (hasHistory && totalPortfolioValue > 0) {
+                        const avgAUM = (prevTotalValue + totalPortfolioValue) / 2;
+                        turnoverPct = (Math.min(totalBuys, totalSells) / avgAUM) * 100;
+                    }
+                    
+                    // 5. Inject calculated metrics into UI panel
+                    // Convert thousands to a readable Dollar format (e.g., $150,000k -> $150.00M)
+                    const aumMillions = (totalPortfolioValue / 1000).toFixed(2);
+                    document.getElementById('c-aum').innerText = `$${parseFloat(aumMillions).toLocaleString()}M`;
+                    document.getElementById('c-concentration').innerText = `${concentrationPct.toFixed(2)}%`;
+                    document.getElementById('c-options').innerText = optionsRatio;
+                    
+                    // Display Turnover (or N/A if it's their very first filing)
+                    document.getElementById('c-turnover').innerText = hasHistory ? `${turnoverPct.toFixed(2)}%` : "N/A (No previous quarter)";
+
+                    // Visual bar adjustment
+                    document.getElementById('concentration-bar-wrapper').style.display = 'block';
+                    document.getElementById('concentration-bar').style.width = `${concentrationPct}%`;
+                    
+                    // Color code bar based on high conviction vs diversification thresholds
+                    if (concentrationPct >= 60) {
+                        document.getElementById('concentration-bar').style.backgroundColor = '#d32f2f';
+                    } else if (concentrationPct >= 35) {
+                        document.getElementById('concentration-bar').style.backgroundColor = '#0070f3';
+                    } else {
+                        document.getElementById('concentration-bar').style.backgroundColor = '#2e7d32';
+                    }
+                    // --- END CONCENTRATION STAGE ---
                     
                     filteredStocks = [...allStocks];
                     filteredOptions = [...allOptions];

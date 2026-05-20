@@ -253,13 +253,14 @@ def get_holdings(accession_no: str):
         if previous_filing:
             previous_holdings, _ = parse_filing_xml(previous_filing)
 
-        # 5. Build lookup dictionary for previous holdings using CUSIP + Option Type as the unique key
+        # 5. Build lookup dictionary for previous holdings
         prev_dict = {}
         for h in previous_holdings:
-            # h[12] is CUSIP, h[7] is put_call flag
-            key = f"{h[12]}_{h[7]}"
-            # Accumulate shares (sometimes funds report the same stock in multiple rows)
-            prev_dict[key] = prev_dict.get(key, 0) + h[2]
+            key = f"{h[12]}_{h[7]}"  # CUSIP + Put/Call flag
+            if key not in prev_dict:
+                prev_dict[key] = {"shares": 0, "value_usd": 0, "ticker": h[11] or "N/A"}
+            prev_dict[key]["shares"] += h[2]
+            prev_dict[key]["value_usd"] += h[3]
 
         # 6. Map current holdings and calculate changes
         processed_holdings = []
@@ -272,9 +273,12 @@ def get_holdings(accession_no: str):
             current_keys.add(key)
 
             current_shares = h[2]
-            prev_shares = prev_dict.get(key, 0)
+            current_value = h[3]
 
-            # Determine Change Status
+            prev_data = prev_dict.get(key, {"shares": 0, "value_usd": 0})
+            prev_shares = prev_data["shares"]
+            prev_value = prev_data["value_usd"]
+
             status = "Maintained"
             change_shares = 0
             change_pct = 0.0
@@ -288,7 +292,7 @@ def get_holdings(accession_no: str):
                 change_pct = (change_shares / prev_shares) * 100
             elif current_shares < prev_shares:
                 status = "Decreased"
-                change_shares = current_shares - prev_shares  # Will be negative
+                change_shares = current_shares - prev_shares
                 change_pct = (change_shares / prev_shares) * 100
 
             processed_holdings.append(
@@ -303,28 +307,22 @@ def get_holdings(accession_no: str):
                     "vote_shared": h[9],
                     "vote_none": h[10],
                     "shares": current_shares,
-                    "value_usd": h[3],
+                    "value_usd": current_value,
                     "prev_shares": prev_shares,
+                    "prev_value_usd": prev_value,  # <--- NEW DATA
                     "change_shares": change_shares,
                     "change_pct": round(change_pct, 2),
                     "status": status,
                 }
             )
 
-        # 7. Find Closed Positions (Positions in prev_dict that aren't in current_keys)
-        for key, prev_shares in prev_dict.items():
+        # 7. Find Closed Positions
+        for key, prev_data in prev_dict.items():
             if key not in current_keys:
                 cusip, put_call = key.split("_")
-                # Try to find the ticker name from the previous dataset
-                ticker = "N/A"
-                for ph in previous_holdings:
-                    if ph[12] == cusip and ph[7] == put_call:
-                        ticker = ph[11] or "N/A"
-                        break
-
                 processed_holdings.append(
                     {
-                        "ticker": ticker,
+                        "ticker": prev_data["ticker"],
                         "cusip": cusip,
                         "class": "N/A",
                         "share_type": "N/A",
@@ -334,9 +332,10 @@ def get_holdings(accession_no: str):
                         "vote_shared": 0,
                         "vote_none": 0,
                         "shares": 0,
-                        "value_usd": 0,  # Current is 0
-                        "prev_shares": prev_shares,
-                        "change_shares": -prev_shares,
+                        "value_usd": 0,
+                        "prev_shares": prev_data["shares"],
+                        "prev_value_usd": prev_data["value_usd"],  # <--- NEW DATA
+                        "change_shares": -prev_data["shares"],
                         "change_pct": -100.0,
                         "status": "Closed",
                     }
