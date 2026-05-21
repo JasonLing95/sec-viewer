@@ -1,5 +1,7 @@
 import pandas as pd
 import os
+import re
+import urllib.request
 
 os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
 
@@ -176,6 +178,34 @@ def calculate_holdtime(data: HoldTimeRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def get_sgml_acceptance_time(cik, accession_no):
+    """Fetches the first 1000 bytes of the SEC SGML .txt file to extract the ACCEPTANCE-DATETIME."""
+    cik_stripped = str(cik).lstrip("0")
+    acc_no_stripped = accession_no.replace("-", "")
+    txt_url = f"https://www.sec.gov/Archives/edgar/data/{cik_stripped}/{acc_no_stripped}/{accession_no}.txt"
+
+    try:
+        # Pass the mandatory SEC User-Agent
+        req = urllib.request.Request(
+            txt_url, headers={"User-Agent": "data-pipeline@yourdomain.com"}
+        )
+
+        # Only read the first 1000 bytes to keep this lightning fast
+        with urllib.request.urlopen(req) as response:
+            header_text = response.read(1000).decode("utf-8")
+
+        # Regex to find <ACCEPTANCE-DATETIME>20241101060136
+        match = re.search(r"<ACCEPTANCE-DATETIME>(\d{14})", header_text)
+        if match:
+            raw_dt = match.group(1)
+            # Format it clearly: YYYY-MM-DD HH:MM:SS
+            return f"{raw_dt[:4]}-{raw_dt[4:6]}-{raw_dt[6:8]} {raw_dt[8:10]}:{raw_dt[10:12]}:{raw_dt[12:14]}"
+    except Exception as e:
+        print(f"Failed to parse SGML header for {accession_no}: {e}")
+
+    return "N/A"
 
 
 def gather_holdings_using_lxml(tables, ns, cik, accession_number) -> list[list]:
@@ -542,6 +572,8 @@ def get_holdings(accession_no: str):
                     }
                 )
 
+        accepted_time = get_sgml_acceptance_time(filing.cik, filing.accession_no)
+
         return JSONResponse(
             content={
                 "company": filing.company,
@@ -549,7 +581,8 @@ def get_holdings(accession_no: str):
                 "filing_date": str(filing.filing_date),
                 "report_period": (
                     str(filing.period_of_report) if filing.period_of_report else "N/A"
-                ),  # <--- ADD THIS LINE
+                ),
+                "accepted_time": accepted_time,
                 "recent_filings": recent_list,
                 "company_details": company_details,
                 "sec_index_url": sec_index_url,

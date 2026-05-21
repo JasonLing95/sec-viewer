@@ -230,7 +230,7 @@
     <nav class="global-header">
         <div style="display: flex; align-items: center;">
             <div class="brand" onclick="showFilingsView()">
-                <span class="brand-logo">SCTL</span> SEC Terminal
+                <span class="brand-logo">MQ</span> Moniq Terminal
             </div>
             
             <div class="form-nav">
@@ -297,7 +297,7 @@
                     <strong>Accession:</strong> <span id="c-acc" class="mono">-</span><br>
                     <strong>Report Period:</strong> <span id="c-period" style="color: #0070f3; font-weight: bold;">-</span><br>
                     <strong>Filing Date:</strong> <span id="c-date">-</span><br>
-                    <strong>Source Docs:</strong> 
+                    <strong>Accepted:</strong> <span id="c-accepted" style="font-family: monospace; color: #555;">-</span><br> <strong>Source Docs:</strong> 
                     <a id="c-link-index" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Index HTML</a> | 
                     <a id="c-link-xml" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Raw XML</a>
                 </div>
@@ -699,6 +699,7 @@
                     document.getElementById('c-cik').innerText = data.cik;
                     document.getElementById('c-period').innerText = data.report_period;
                     document.getElementById('c-date').innerText = data.filing_date;
+                    document.getElementById('c-accepted').innerText = data.accepted_time;
                     document.getElementById('c-acc').innerText = accessionNo;
                     document.getElementById('c-link-index').href = data.sec_index_url;
                     document.getElementById('c-link-xml').href = data.sec_xml_url;
