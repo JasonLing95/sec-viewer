@@ -22,6 +22,10 @@ cusip_to_ticker = {}
 pq_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ct.pq"
 )
+cik_mapping_df = None
+cik_pq_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cik-lookup.pq"
+)
 
 try:
     if os.path.exists(pq_path):
@@ -41,6 +45,18 @@ try:
         )
 except Exception as e:
     print(f"Failed to load Parquet mapping: {e}")
+
+try:
+    if os.path.exists(cik_pq_path):
+        cik_mapping_df = pd.read_parquet(cik_pq_path)
+        # IMPORTANT: Change 'Company Name' and 'CIK' to your exact column names!
+        # We create a lowercase column once on startup to make searches lightning fast
+        cik_mapping_df["search_name"] = (
+            cik_mapping_df["Company Name"].astype(str).str.lower()
+        )
+        print(f"Successfully loaded {len(cik_mapping_df)} CIK search records.")
+except Exception as e:
+    print(f"Failed to load CIK mapping: {e}")
 
 groq_client = Groq()
 
@@ -234,6 +250,71 @@ def gather_holdings_using_lxml(tables, ns, cik, accession_number) -> list[list]:
     return holdings
 
 
+@app.get("/api/search")
+def search_company(q: str):
+    """Searches the Parquet dataframe for matching company names."""
+    if cik_mapping_df is None:
+        return JSONResponse(
+            status_code=500, content={"error": "Search database not loaded."}
+        )
+
+    query = q.lower().strip()
+    if len(query) < 2:
+        return JSONResponse(content={"results": []})
+
+    # Fast vectorized substring search. Limit to top 8 results for a clean UI.
+    matches = cik_mapping_df[
+        cik_mapping_df["search_name"].str.contains(query, na=False)
+    ].head(8)
+
+    results = []
+    for _, row in matches.iterrows():
+        results.append({"name": row["Company Name"], "cik": str(row["CIK"])})
+
+    return JSONResponse(content={"results": results})
+
+
+@app.get("/api/filings/company/{cik}")
+def get_company_filings(cik: str):
+    """Fetches the 13F-HR history for a specific searched company."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        comp = Company(cik)
+        filings_obj = comp.get_filings(form="13F-HR")
+
+        recent_filings = []
+        if filings_obj is not None:
+            # Safely get the latest 50, handling if the SEC returns None for empty results
+            latest_res = filings_obj.latest(50)
+
+            if latest_res is not None:
+                # If the SEC package returns a single Filing object instead of an iterable list, wrap it
+                if type(latest_res).__name__ == "Filing":
+                    recent_filings = [latest_res]
+                else:
+                    recent_filings = latest_res
+
+        results = []
+        for filing in recent_filings:
+            results.append(
+                {
+                    "company": filing.company,
+                    "cik": filing.cik,
+                    "date": str(filing.filing_date),
+                    "accession_no": filing.accession_no,
+                    "report_period": (
+                        str(filing.period_of_report)
+                        if filing.period_of_report
+                        else "N/A"
+                    ),
+                }
+            )
+
+        return JSONResponse(content={"filings": results, "company_name": comp.name})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/api/filings")
 def get_recent_filings(page: int = 1):
     set_identity("data-pipeline@yourdomain.com")
@@ -251,6 +332,11 @@ def get_recent_filings(page: int = 1):
                     "cik": filing.cik,
                     "date": str(filing.filing_date),
                     "accession_no": filing.accession_no,
+                    "report_period": (
+                        str(filing.period_of_report)
+                        if filing.period_of_report
+                        else "N/A"
+                    ),
                 }
             )
         return JSONResponse(content={"filings": results, "page": page})
@@ -282,10 +368,15 @@ def get_holdings(accession_no: str):
             company_details["incorporated"] = getattr(
                 comp, "state_of_incorporation", "N/A"
             )
-            company_details["phone"] = getattr(comp, "phone", "N/A")
             company_details["category"] = getattr(comp, "business_category", "N/A")
 
-            biz_address = getattr(comp, "business_address", None)
+            if hasattr(comp, "data") and comp.data:
+                company_details["phone"] = getattr(comp.data, "phone", "N/A")
+                biz_address = getattr(comp.data, "business_address", None)
+            else:
+                company_details["phone"] = "N/A"
+                biz_address = None
+
             if biz_address:
                 address_parts = [
                     getattr(biz_address, "street1", ""),
@@ -456,6 +547,9 @@ def get_holdings(accession_no: str):
                 "company": filing.company,
                 "cik": filing.cik,
                 "filing_date": str(filing.filing_date),
+                "report_period": (
+                    str(filing.period_of_report) if filing.period_of_report else "N/A"
+                ),  # <--- ADD THIS LINE
                 "recent_filings": recent_list,
                 "company_details": company_details,
                 "sec_index_url": sec_index_url,

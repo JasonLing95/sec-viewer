@@ -191,6 +191,39 @@
             font-weight: bold;
             background-color: rgba(0, 112, 243, 0.1);
         }
+
+        /* SEARCH DROPDOWN STYLES */
+        .search-container {
+            position: relative;
+        }
+        .search-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            width: 100%;
+            background: #222;
+            border: 1px solid #444;
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            z-index: 200;
+            display: none;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .search-item {
+            padding: 10px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .search-item:last-child { border-bottom: none; }
+        .search-item:hover { background: #333; }
+        .search-item-name { color: #fff; font-size: 12px; font-weight: bold; }
+        .search-item-cik { color: #888; font-size: 10px; font-family: monospace; }
+        .search-loading { padding: 10px; color: #888; font-size: 12px; text-align: center; font-style: italic; }
     </style>
 </head>
 <body>
@@ -209,8 +242,11 @@
             </div>
         </div>
         
-        <div>
-            <input type="text" class="global-search" placeholder="Search Funds, Managers, or CIK...">
+        <div class="search-container">
+            <input type="text" id="global-search-input" class="global-search" placeholder="Search Funds, Managers, or CIK..." onkeyup="handleGlobalSearch(event)" autocomplete="off">
+            
+            <div id="search-dropdown" class="search-dropdown">
+                </div>
         </div>
         
         <div class="header-links">
@@ -239,7 +275,7 @@
         <div style="overflow-x: auto;">
             <table class="screener-table">
                 <thead>
-                    <tr><th>No.</th><th>Fund / Company</th><th>CIK</th><th>Filing Date</th><th>Accession No.</th></tr>
+                    <tr><th>No.</th><th>Fund / Company</th><th>CIK</th><th>Report Period</th><th>Filing Date</th><th>Accession No.</th></tr>
                 </thead>
                 <tbody id="filings-body"></tbody>
             </table>
@@ -259,6 +295,7 @@
                 <div>
                     <strong>CIK:</strong> <span id="c-cik" class="mono">-</span><br>
                     <strong>Accession:</strong> <span id="c-acc" class="mono">-</span><br>
+                    <strong>Report Period:</strong> <span id="c-period" style="color: #0070f3; font-weight: bold;">-</span><br>
                     <strong>Filing Date:</strong> <span id="c-date">-</span><br>
                     <strong>Source Docs:</strong> 
                     <a id="c-link-index" href="#" target="_blank" style="color: #0070f3; text-decoration: none;">Index HTML</a> | 
@@ -303,11 +340,6 @@
             </div>
         </div>
 
-        <div class="toolbar">
-            <input type="text" id="search-input" placeholder="Search Ticker, CUSIP, or Class..." onkeyup="handleSearch(event)">
-            <strong style="font-size: 13px; color: #333;">Master Search filter applied to both tables</strong>
-        </div>
-
         <!-- Simplified AI Summary Box Component -->
         <div style="background: white; padding: 15px; margin-bottom: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-top: 3px solid #2e7d32;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -317,6 +349,11 @@
             <div id="summary-output" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 12px; font-size: 13px; max-height: 300px; overflow-y: auto; white-space: pre-wrap; color: #666; line-height: 1.5; font-style: italic;">
                 Click the button above to generate a strategic breakdown of this portfolio's top holdings, directional bets, and options exposure.
             </div>
+        </div>
+
+        <div class="toolbar">
+            <input type="text" id="search-input" placeholder="Search Ticker, CUSIP, or Class..." onkeyup="handleSearch(event)">
+            <strong style="font-size: 13px; color: #333;">Master Search filter applied to both tables</strong>
         </div>
 
         <!-- STOCKS TABLE -->
@@ -336,8 +373,8 @@
                         <th onclick="sortStocks('share_type')">Type ↕</th>
                         <th onclick="sortStocks('shares')" style="text-align: right;">Shares / PRN ↕</th>
                         <th onclick="sortStocks('value_usd')" style="text-align: right;">Value ($k) ↕</th>
-                        <th onclick="sortHoldings('change_pct')" style="text-align: right;">QoQ Delta ↕</th>
-                        <th onclick="sortHoldings('discretion')">Discr ↕</th>
+                        <th onclick="sortStocks('change_pct')" style="text-align: right;">QoQ Delta ↕</th>
+                        <th onclick="sortStocks('discretion')">Discr ↕</th>
                         <th>Option</th>
                     </tr>
                 </thead>
@@ -392,15 +429,129 @@
         let sortColOptions = 'value_usd'; let sortAscOptions = false;
 
         // ==========================================
+        // GLOBAL SEARCH LOGIC
+        // ==========================================
+        let searchTimeout = null;
+
+        function handleGlobalSearch(e) {
+            const query = e.target.value.trim();
+            const dropdown = document.getElementById('search-dropdown');
+            
+            // Hide dropdown if query is too short
+            if (query.length < 2) {
+                dropdown.style.display = 'none';
+                return;
+            }
+
+            // Debounce: Wait 300ms after the user stops typing before fetching
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                dropdown.style.display = 'block';
+                dropdown.innerHTML = '<div class="search-loading">Searching database...</div>';
+
+                fetch(`/api/search?q=${encodeURIComponent(query)}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.error || !data.results || data.results.length === 0) {
+                            dropdown.innerHTML = '<div class="search-loading">No companies found.</div>';
+                            return;
+                        }
+
+                        dropdown.innerHTML = '';
+                        data.results.forEach(res => {
+                            // When clicked, fetch this specific company's filings
+                            dropdown.innerHTML += `
+                                <div class="search-item" onclick="loadCompanyFilings('${res.cik}', '${res.name.replace(/'/g, "\\'")}')">
+                                    <span class="search-item-name">${res.name}</span>
+                                    <span class="search-item-cik">CIK: ${res.cik}</span>
+                                </div>
+                            `;
+                        });
+                    })
+                    .catch(err => {
+                        dropdown.innerHTML = '<div class="search-loading" style="color: #ff5252;">Search failed.</div>';
+                    });
+            }, 300);
+        }
+
+        function loadCompanyFilings(cik, companyName) {
+            // Close dropdown and reset search text
+            document.getElementById('search-dropdown').style.display = 'none';
+            document.getElementById('global-search-input').value = "";
+            
+            // Turn off global live auto-refresh
+            document.getElementById('auto-refresh-cb').checked = false;
+            toggleLiveMode();
+            
+            // Switch to Filings View, but DO NOT fetch global data (pass false)
+            showFilingsView(false); 
+            document.getElementById('page-title').innerText = `13F-HR History: ${companyName}`;
+            
+            const tbody = document.getElementById('filings-body');
+            tbody.innerHTML = `<tr><td colspan="5" class="loading">Loading SEC history for CIK ${cik}...</td></tr>`;
+            
+            // Disable pagination since we are viewing a single company
+            document.getElementById('f-prev').disabled = true;
+            document.getElementById('f-next').disabled = true;
+            document.getElementById('f-ind').innerText = "All Recent";
+
+            fetch(`/api/filings/company/${cik}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    
+                    tbody.innerHTML = '';
+                    if (data.filings.length === 0) {
+                        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;">No 13F-HR filings found for this entity.</td></tr>`;
+                        return;
+                    }
+                    
+                    data.filings.forEach((f, i) => {
+                        tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                            <td>${i + 1}</td>
+                            <td style="font-weight: bold;">${f.company}</td>
+                            <td class="mono">${f.cik}</td>
+                            <td>${f.report_period}</td> <td>${f.date}</td>
+                            <td class="mono">${f.accession_no}</td>
+                        </tr>`;
+                    });
+                    updateTimestamp();
+                })
+                .catch(err => {
+                    tbody.innerHTML = `<tr><td colspan="5" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+                });
+        }
+        
+        // Hide dropdown if user clicks anywhere else on the page
+        document.addEventListener('click', function(event) {
+            const searchContainer = document.querySelector('.search-container');
+            const dropdown = document.getElementById('search-dropdown');
+            if (searchContainer && !searchContainer.contains(event.target)) {
+                dropdown.style.display = 'none';
+            }
+        });
+
+        // ==========================================
         // ROUTING & VIEWS
         // ==========================================
-        function showFilingsView() {
+        function showFilingsView(fetchData = true, updateUrl = true) {
+            // NEW: Clean the URL when returning home
+            if (updateUrl) {
+                const url = new URL(window.location);
+                url.searchParams.delete('accession');
+                window.history.pushState({}, '', url);
+            }
+
             document.getElementById('holdings-view').style.display = 'none';
             document.getElementById('filings-view').style.display = 'block';
             document.getElementById('back-btn').style.display = 'none';
-            document.getElementById('filings-controls').style.display = 'flex'; // Show controls
+            document.getElementById('filings-controls').style.display = 'flex'; 
             document.getElementById('page-title').innerText = "Latest 13F-HR Filings";
-            loadFilings(currentFilingsPage);
+            
+            // Only fetch global data if the flag is true
+            if (fetchData) {
+                loadFilings(currentFilingsPage);
+            }
         }
 
         function showHoldingsView() {
@@ -446,7 +597,9 @@
                         newHtml += `<tr onclick="fetchHoldings('${f.accession_no}')">
                             <td>${i + 1}</td>
                             <td style="font-weight: bold;">${f.company}</td>
-                            <td class="mono">${f.cik}</td><td>${f.date}</td><td class="mono">${f.accession_no}</td>
+                            <td class="mono">${f.cik}</td>
+                            <td>${f.report_period}</td> <td>${f.date}</td>
+                            <td class="mono">${f.accession_no}</td>
                         </tr>`;
                     });
                     
@@ -511,7 +664,9 @@
                         tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
                             <td>${offset + i + 1}</td>
                             <td style="font-weight: bold;">${f.company}</td>
-                            <td class="mono">${f.cik}</td><td>${f.date}</td><td class="mono">${f.accession_no}</td>
+                            <td class="mono">${f.cik}</td>
+                            <td>${f.report_period}</td> <td>${f.date}</td>
+                            <td class="mono">${f.accession_no}</td>
                         </tr>`;
                     });
                     updateTimestamp();
@@ -521,7 +676,14 @@
         // ==========================================
         // FETCH AND SPLIT HOLDINGS
         // ==========================================
-        function fetchHoldings(accessionNo) {
+        function fetchHoldings(accessionNo, updateUrl = true) {
+            // NEW: Push the accession number to the browser URL
+            if (updateUrl) {
+                const url = new URL(window.location);
+                url.searchParams.set('accession', accessionNo);
+                window.history.pushState({ accessionNo }, '', url);
+            }
+
             showHoldingsView();
             document.getElementById('c-name').innerText = "Loading data...";
             document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
@@ -535,6 +697,7 @@
                     
                     document.getElementById('c-name').innerText = data.company;
                     document.getElementById('c-cik').innerText = data.cik;
+                    document.getElementById('c-period').innerText = data.report_period;
                     document.getElementById('c-date').innerText = data.filing_date;
                     document.getElementById('c-acc').innerText = accessionNo;
                     document.getElementById('c-link-index').href = data.sec_index_url;
@@ -874,8 +1037,35 @@
             });
         }
 
-        // Initialize App
-        showFilingsView();
+        // ==========================================
+        // BROWSER HISTORY ROUTING
+        // ==========================================
+        window.addEventListener('popstate', (event) => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const currentAcc = urlParams.get('accession');
+            
+            if (currentAcc) {
+                // User clicked forward/back into a company view. (false = don't push URL again)
+                fetchHoldings(currentAcc, false); 
+            } else {
+                // User clicked back to the homepage
+                showFilingsView(true, false);
+            }
+        });
+
+        // ==========================================
+        // INITIALIZE APP
+        // ==========================================
+        const initialUrlParams = new URLSearchParams(window.location.search);
+        const initialAcc = initialUrlParams.get('accession');
+        
+        if (initialAcc) {
+            // If the user refreshed while deep in a company, fetch it immediately!
+            fetchHoldings(initialAcc, false);
+        } else {
+            // Otherwise, load the default homepage
+            showFilingsView(true, false);
+        }
     </script>
 </body>
 </html>
