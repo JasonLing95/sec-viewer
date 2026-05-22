@@ -7,18 +7,26 @@ os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from edgar import set_identity, get_filings, get_by_accession_number, Company
+from edgar import (
+    set_identity,
+    get_by_accession_number,
+    Company,
+)
 from lxml import etree
 
 from groq import Groq
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
+from supabase import create_client
 
 load_dotenv()
 
 app = FastAPI()
+supabase = create_client(
+    os.getenv("SUPABASE_URL"),  # https://PROJECT-ID.supabase.co
+    os.getenv("SUPABASE_KEY"),  # API KEY (ANON)
+)
 
 cusip_to_ticker = {}
 pq_path = os.path.join(
@@ -304,6 +312,69 @@ def search_company(q: str):
     return JSONResponse(content={"results": results})
 
 
+@app.get("/api/company/{cik}/overview")
+def get_company_overview(cik: str):
+    """Fetches broad company metadata and a mixed list of all recent filings."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        comp = Company(cik)
+
+        # 1. Extract Company Details
+        company_details = {
+            "name": comp.name,
+            "cik": str(cik),
+            "fiscal_year": getattr(comp, "fiscal_year_end", "N/A"),
+            "incorporated": getattr(comp, "state_of_incorporation", "N/A"),
+            "category": getattr(comp, "business_category", "N/A"),
+            "phone": "N/A",
+            "address": "N/A",
+        }
+
+        if hasattr(comp, "data") and comp.data:
+            company_details["phone"] = getattr(comp.data, "phone", "N/A")
+            biz_address = getattr(comp.data, "business_address", None)
+            if biz_address:
+                address_parts = [
+                    getattr(biz_address, "street1", ""),
+                    getattr(biz_address, "city", ""),
+                    getattr(biz_address, "state_or_country", ""),
+                    getattr(biz_address, "zipcode", ""),
+                ]
+                company_details["address"] = ", ".join(filter(None, address_parts))
+
+        # 2. Fetch All Recent Filings (Mixed Forms)
+        recent_filings = []
+        filings_obj = comp.get_filings()
+
+        if filings_obj is not None:
+            latest_res = filings_obj.latest(100)  # Grab the last 100 filings
+            if latest_res is not None:
+                if latest_res is not None:
+                    if hasattr(latest_res, "__iter__"):
+                        f_list = list(latest_res)
+                    else:
+                        f_list = [latest_res]
+
+                for f in f_list:
+                    recent_filings.append(
+                        {
+                            "form": f.form,
+                            "date": str(f.filing_date),
+                            "accession_no": str(f.accession_no),
+                            "report_period": (
+                                str(f.period_of_report) if f.period_of_report else "N/A"
+                            ),
+                        }
+                    )
+
+        return JSONResponse(
+            content={"details": company_details, "filings": recent_filings}
+        )
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/api/filings/company/{cik}")
 def get_company_filings(cik: str):
     """Fetches the 13F-HR history for a specific searched company."""
@@ -318,11 +389,10 @@ def get_company_filings(cik: str):
             latest_res = filings_obj.latest(50)
 
             if latest_res is not None:
-                # If the SEC package returns a single Filing object instead of an iterable list, wrap it
-                if type(latest_res).__name__ == "Filing":
-                    recent_filings = [latest_res]
+                if hasattr(latest_res, "__iter__"):
+                    recent_filings = list(latest_res)
                 else:
-                    recent_filings = latest_res
+                    recent_filings = [latest_res]
 
         results = []
         for filing in recent_filings:
@@ -347,28 +417,217 @@ def get_company_filings(cik: str):
 
 @app.get("/api/filings")
 def get_recent_filings(page: int = 1):
-    set_identity("data-pipeline@yourdomain.com")
     try:
         limit = 50
         start = (page - 1) * limit
-        all_latest = get_filings(form="13F-HR").latest(start + limit)
-        page_filings = all_latest[start : start + limit]
+        end = start + limit - 1
+
+        response = (
+            supabase.table("sec_filings")
+            .select("*")
+            .eq("form", "13F-HR")
+            .order("filing_date", desc=True)
+            .range(start, end)
+            .execute()
+        )
 
         results = []
-        for filing in page_filings:
+        for row in response.data:
             results.append(
                 {
-                    "company": filing.company,
-                    "cik": filing.cik,
-                    "date": str(filing.filing_date),
-                    "accession_no": filing.accession_no,
-                    "report_period": (
-                        str(filing.period_of_report)
-                        if filing.period_of_report
-                        else "N/A"
-                    ),
+                    "company": row.get("company_name", "N/A"),
+                    "cik": str(row.get("cik", "")),
+                    "date": str(row.get("filing_date", "")),
+                    "accession_no": row.get("accession_no", ""),
+                    "report_period": str(row.get("report_period", "N/A")),
                 }
             )
+
+        return JSONResponse(content={"filings": results, "page": page})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/filings/corporate")
+def get_recent_corporate_filings(page: int = 1):
+    """Fetches the latest global 10-K and 10-Q filings from Supabase."""
+    try:
+        limit = 50
+        start = (page - 1) * limit
+        end = start + limit - 1
+
+        response = (
+            supabase.table("sec_filings")
+            .select("*")
+            .in_("form", ["10-K", "10-Q"])
+            .order("filing_date", desc=True)
+            .range(start, end)
+            .execute()
+        )
+
+        results = []
+        for row in response.data:
+            results.append(
+                {
+                    "company": row.get("company_name", "N/A"),
+                    "cik": str(row.get("cik", "")),
+                    "form": row.get("form", "N/A"),
+                    "date": str(row.get("filing_date", "")),
+                    "accession_no": row.get("accession_no", ""),
+                    "report_period": str(row.get("report_period", "N/A")),
+                }
+            )
+
+        return JSONResponse(content={"filings": results, "page": page})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/filings/company/{cik}/corporate")
+def get_company_corporate_filings(cik: str):
+    """Fetches the 10-Q and 10-K history for a specific searched company."""
+    set_identity("data-pipeline21052026@company.com")
+    try:
+        comp = Company(cik)
+        # Fetch everything for the company, then strictly filter
+        filings_obj = comp.get_filings()
+
+        results = []
+        if filings_obj is not None:
+            latest_res = filings_obj.latest(100)
+            if latest_res is not None:
+                if hasattr(latest_res, "__iter__"):
+                    recent_filings = list(latest_res)
+                else:
+                    recent_filings = [latest_res]
+
+                # Strict python filter
+                corp_only = [f for f in recent_filings if f.form in ["10-K", "10-Q"]]
+
+                for filing in corp_only:
+                    results.append(
+                        {
+                            "company": filing.company,
+                            "cik": filing.cik,
+                            "form": filing.form,
+                            "date": str(filing.filing_date),
+                            "accession_no": filing.accession_no,
+                            "report_period": (
+                                str(filing.period_of_report)
+                                if filing.period_of_report
+                                else "N/A"
+                            ),
+                        }
+                    )
+
+        return JSONResponse(content={"filings": results, "company_name": comp.name})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/filings/insider")
+def get_recent_insider_filings(page: int = 1):
+    """Fetches global Form 4s from Supabase."""
+    try:
+        limit = 50
+        start = (page - 1) * limit
+        end = start + limit - 1
+
+        response = (
+            supabase.table("sec_filings")
+            .select("*")
+            .eq("form", "4")
+            .order("filing_date", desc=True)
+            .range(start, end)
+            .execute()
+        )
+
+        results = []
+        for row in response.data:
+            results.append(
+                {
+                    "company": row.get("company_name", "N/A"),
+                    "cik": str(row.get("cik", "")),
+                    "form": row.get("form", "4"),
+                    "date": str(row.get("filing_date", "")),
+                    "accession_no": row.get("accession_no", ""),
+                    "report_period": str(row.get("report_period", "N/A")),
+                }
+            )
+
+        return JSONResponse(content={"filings": results, "page": page})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/filings/company/{cik}/insider")
+def get_company_insider_filings(cik: str):
+    """Fetches the Form 4 history for a specific searched company."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        comp = Company(cik)
+        filings_obj = comp.get_filings(form="4")
+
+        results = []
+        if filings_obj is not None:
+            latest_res = filings_obj.latest(100)
+            if latest_res is not None:
+                if hasattr(latest_res, "__iter__"):
+                    recent_filings = list(latest_res)
+                else:
+                    recent_filings = [latest_res]
+
+                for filing in recent_filings:
+                    results.append(
+                        {
+                            "company": filing.company,
+                            "cik": str(filing.cik),
+                            "form": filing.form,
+                            "date": str(filing.filing_date),
+                            "accession_no": str(filing.accession_no),
+                            "report_period": (
+                                str(filing.period_of_report)
+                                if filing.period_of_report
+                                else "N/A"
+                            ),
+                        }
+                    )
+
+        return JSONResponse(content={"filings": results, "company_name": comp.name})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/filings/formd")
+def get_recent_formd_filings(page: int = 1):
+    """Fetches global Form D and D/A filings from Supabase."""
+    try:
+        limit = 50
+        start = (page - 1) * limit
+        end = start + limit - 1
+
+        response = (
+            supabase.table("sec_filings")
+            .select("*")
+            .in_("form", ["D", "D/A"])
+            .order("filing_date", desc=True)
+            .range(start, end)
+            .execute()
+        )
+
+        results = []
+        for row in response.data:
+            results.append(
+                {
+                    "company": row.get("company_name", "N/A"),
+                    "cik": str(row.get("cik", "")),
+                    "form": row.get("form", "D"),
+                    "date": str(row.get("filing_date", "")),
+                    "accession_no": row.get("accession_no", ""),
+                    "report_period": str(row.get("report_period", "N/A")),
+                }
+            )
+
         return JSONResponse(content={"filings": results, "page": page})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
