@@ -554,6 +554,22 @@
         </div>
 
         <div id="tab-financials" style="background: white; padding: 15px; border: 1px solid #ccc; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+            <div id="kpi-banner" style="display: none; grid-template-columns: repeat(4, 1fr); gap: 15px; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                <div>
+                    <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Net Revenue</div>
+                    <div id="kpi-rev" style="font-size: 18px; font-weight: bold; color: #111;">-</div>
+                    <div id="kpi-rev-g" style="font-size: 12px; font-weight: bold;">-</div>
+                </div>
+                <div>
+                    <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Net Income</div>
+                    <div id="kpi-ni" style="font-size: 18px; font-weight: bold; color: #111;">-</div>
+                    <div id="kpi-ni-g" style="font-size: 12px; font-weight: bold;">-</div>
+                </div>
+                <div>
+                    <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Profit Margin</div>
+                    <div id="kpi-margin" style="font-size: 18px; font-weight: bold; color: #0070f3;">-</div>
+                </div>
+            </div>
             <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
                 <select id="statement-selector" onchange="renderSelectedStatement()" style="padding: 6px; font-weight: bold; border-radius: 4px;">
                     <option value="income">Income Statement</option>
@@ -561,6 +577,8 @@
                     <option value="cash">Cash Flow</option>
                 </select>
                 <button id="fin-ai-btn" class="btn-primary" style="background: #2e7d32; font-size: 12px;" onclick="triggerStatementSummary()">Summarize Statement</button>
+                
+                <button id="trend-btn" class="btn-primary" style="background: #1976d2; font-size: 12px; margin-left: auto;" onclick="toggleTrendView()">Show 5-Year Trend</button>
             </div>
 
             <div id="fin-ai-output" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 15px; border-radius: 6px; margin-bottom: 15px; display: none; font-size: 13px; line-height: 1.5; color: #333;"></div>

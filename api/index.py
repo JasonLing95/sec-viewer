@@ -678,37 +678,45 @@ def get_narrative_sections(accession_no: str):
         if not filing:
             return JSONResponse(status_code=404, content={"error": "Filing not found."})
 
-        sections = {}
-
-        # Parse based on Form Type
+        # Initialize the appropriate report object
         if filing.form in ["10-K", "10-K/A"]:
             report = TenK(filing)
-            sections["Business (Item 1)"] = report["Item 1"]
-            sections["Risk Factors (Item 1A)"] = report["Item 1A"]
-            sections["Legal Proceedings (Item 3)"] = report["Item 3"]
-            sections["MD&A (Item 7)"] = report["Item 7"]
-
         elif filing.form in ["10-Q", "10-Q/A"]:
             report = TenQ(filing)
-            sections["MD&A (Item 2)"] = report["Item 2"]
-            # 10-Qs sometimes put risk & legal in Part II
-            sections["Risk Factors (Part II Item 1A)"] = report["Part II Item 1A"]
-            sections["Legal Proceedings (Part II Item 1)"] = report["Part II Item 1"]
         else:
             return JSONResponse(
                 status_code=400,
                 content={"error": "Unsupported form type for narrative extraction."},
             )
 
-        # Clean up the dictionary: Remove sections that the company left blank
-        clean_sections = {}
-        for key, text in sections.items():
-            if (
-                text and len(str(text).strip()) > 50
-            ):  # Ensure it's not just a blank placeholder
-                clean_sections[key] = str(text)
+        sections = {}
 
-        return JSONResponse(content={"sections": clean_sections})
+        # DYNAMIC EXTRACTION: Loop through every available item in the filing
+        if hasattr(report, "items"):
+            for item_str in report.items:
+                try:
+                    # item_str looks like 'Part I, Item 1'
+                    if "," in item_str:
+                        # Split by comma to get 'Part I' and ' Item 1' (preserving the leading space)
+                        part, item = item_str.split(",", 1)
+                        text = report.get_item_with_part(part, item)
+                    else:
+                        # Fallback for unexpected formats
+                        text = report[item_str]
+
+                    # Clean up: Only add sections that actually contain meaningful text
+                    if text and len(str(text).strip()) > 50:
+                        # Use the native item_str (e.g., "Part I, Item 1") as the UI title
+                        sections[item_str] = str(text)
+                except Exception as e:
+                    print(f"Could not extract {item_str}: {e}")
+
+        if not sections:
+            return JSONResponse(
+                status_code=404, content={"error": "No narrative sections found."}
+            )
+
+        return JSONResponse(content={"sections": sections})
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -730,6 +738,111 @@ def get_financial_statements(accession_no: str):
             )
 
         statements = xbrl.statements
+
+        def get_clean_df(stmt):
+            if stmt is None:
+                return None
+            try:
+                return stmt.to_dataframe().reset_index()
+            except:
+                return None
+
+        inc_df = get_clean_df(statements.income_statement())
+        bal_df = get_clean_df(statements.balance_sheet())
+        cash_df = get_clean_df(statements.cashflow_statement())
+
+        # 2. Extract KPIs safely using Pandas
+        kpis = {
+            "revenue": "N/A",
+            "revenue_growth": "N/A",
+            "net_income": "N/A",
+            "ni_growth": "N/A",
+            "profit_margin": "N/A",
+        }
+
+        if inc_df is not None and not inc_df.empty:
+            try:
+                # Find all columns that look like dates (e.g., '2026-03-31 (Q2)')
+                date_cols = [
+                    c for c in inc_df.columns if re.match(r"^\d{4}-\d{2}-\d{2}", str(c))
+                ]
+
+                if len(date_cols) > 0:
+                    # Pick the very first date column as the "latest" period
+                    latest = date_cols[0]
+
+                    # Extract the suffix (e.g., " (Q2)") so we compare Apples to Apples!
+                    parts = str(latest).split(" ", 1)
+                    suffix = f" {parts[1]}" if len(parts) > 1 else ""
+
+                    # Find the prior year column that matches the EXACT SAME suffix
+                    prior = next(
+                        (col for col in date_cols[1:] if col.endswith(suffix)), None
+                    )
+
+                    # Use the ultra-clean 'standard_concept' column if it exists
+                    has_std = "standard_concept" in inc_df.columns
+                    if has_std:
+                        rev_mask = inc_df["standard_concept"].str.contains(
+                            "(?i)^revenue$", na=False
+                        )
+                        ni_mask = inc_df["standard_concept"].str.contains(
+                            "(?i)^netincome$", na=False
+                        )
+                    else:
+                        rev_mask = inc_df["label"].str.contains(
+                            "(?i)total revenue|net revenues|net sales|revenue", na=False
+                        )
+                        ni_mask = inc_df["label"].str.contains(
+                            "(?i)net income|net earnings", na=False
+                        )
+
+                    rev_latest = None
+                    ni_latest = None
+
+                    # Calculate Revenue & Growth
+                    if rev_mask.any():
+                        rev_row = inc_df[rev_mask].iloc[0]
+                        v_latest = rev_row.get(latest)
+                        if pd.notna(v_latest) and str(v_latest).strip() != "":
+                            rev_latest = float(v_latest)
+                            kpis["revenue"] = f"${rev_latest:,.0f}"
+
+                            if (
+                                prior
+                                and pd.notna(rev_row.get(prior))
+                                and str(rev_row.get(prior)).strip() != ""
+                            ):
+                                v_prior = float(rev_row.get(prior))
+                                if v_prior != 0:
+                                    kpis["revenue_growth"] = (
+                                        f"{((rev_latest - v_prior) / abs(v_prior)) * 100:+.1f}%"
+                                    )
+
+                    # Calculate Net Income & Growth
+                    if ni_mask.any():
+                        ni_row = inc_df[ni_mask].iloc[0]
+                        v_latest = ni_row.get(latest)
+                        if pd.notna(v_latest) and str(v_latest).strip() != "":
+                            ni_latest = float(v_latest)
+                            kpis["net_income"] = f"${ni_latest:,.0f}"
+
+                            if (
+                                prior
+                                and pd.notna(ni_row.get(prior))
+                                and str(ni_row.get(prior)).strip() != ""
+                            ):
+                                v_prior = float(ni_row.get(prior))
+                                if v_prior != 0:
+                                    kpis["ni_growth"] = (
+                                        f"{((ni_latest - v_prior) / abs(v_prior)) * 100:+.1f}%"
+                                    )
+
+                    # Calculate Profit Margin
+                    if rev_latest and ni_latest and rev_latest != 0:
+                        kpis["profit_margin"] = f"{(ni_latest / rev_latest) * 100:.1f}%"
+            except Exception as e:
+                print(f"KPI Extraction Failed: {e}")
 
         def extract_statement(stmt):
             try:
@@ -754,6 +867,7 @@ def get_financial_statements(accession_no: str):
 
         return JSONResponse(
             content={
+                "kpis": kpis,
                 "income_statement": income_data,
                 "balance_sheet": balance_data,
                 "cash_flow": cashflow_data,
@@ -1039,6 +1153,44 @@ def get_holdings(accession_no: str):
                 "holdings": processed_holdings,
             }
         )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/trends/{accession_no}/{stmt_type}")
+def get_financial_trends(accession_no: str, stmt_type: str):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return JSONResponse(status_code=404, content={"error": "Filing not found."})
+
+        comp = Company(filing.cik)
+
+        # Use the multi-period stitching from edgartools
+        if stmt_type == "income":
+            stmt = comp.income_statement(periods=5)
+        elif stmt_type == "balance":
+            stmt = comp.balance_sheet(periods=5)
+        elif stmt_type == "cash":
+            stmt = comp.cashflow_statement(periods=5)
+        else:
+            return JSONResponse(
+                status_code=400, content={"error": "Invalid statement type"}
+            )
+
+        if stmt is None:
+            return JSONResponse(
+                status_code=404, content={"error": "Trend data not available."}
+            )
+
+        # Convert to Pandas safely
+        df = stmt.to_dataframe().reset_index()
+        df = df.replace([np.inf, -np.inf], "")
+        df = df.fillna("")
+
+        return JSONResponse(content={"trend_data": df.to_dict(orient="records")})
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 

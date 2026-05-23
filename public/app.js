@@ -14,6 +14,10 @@ let cachedPortfolioSummary = "";
 let cachedStatementSummaries = {};
 let cachedNarrativeSummaries = {};
 
+// --- TREND STATE ---
+let isTrendMode = false;
+let trendCache = { income: null, balance: null, cash: null };
+
 // ==========================================
 // GLOBAL SEARCH LOGIC
 // ==========================================
@@ -1031,6 +1035,13 @@ function loadCompanyOverview(cik) {
 let currentFinancialData = { income: [], balance: [], cash: [] };
 
 function openCorporateDocument(company, form, period, date, accession_no, secUrl, updateUrl = true) {
+    isTrendMode = false;
+    trendCache = { income: null, balance: null, cash: null };
+    if (document.getElementById('trend-btn')) {
+        document.getElementById('trend-btn').innerText = "Show 5-Year Trend";
+        document.getElementById('trend-btn').style.background = "#1976d2";
+    }
+
     // 1. Fallback to ensure we never crash on undefined variables
     const safeCompany = company && company !== 'undefined' ? company : "Unknown Company";
     const safeForm = form && form !== 'undefined' ? form : "N/A";
@@ -1101,6 +1112,22 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
             currentFinancialData.income = data.income_statement || [];
             currentFinancialData.balance = data.balance_sheet || [];
             currentFinancialData.cash = data.cash_flow || [];
+
+            if (data.kpis) {
+                document.getElementById('kpi-banner').style.display = 'grid';
+                document.getElementById('kpi-rev').innerText = data.kpis.revenue;
+                document.getElementById('kpi-ni').innerText = data.kpis.net_income;
+                document.getElementById('kpi-margin').innerText = data.kpis.profit_margin;
+                
+                // Color code the growth percentages (Green for positive, Red for negative)
+                const revG = document.getElementById('kpi-rev-g');
+                revG.innerText = data.kpis.revenue_growth !== "N/A" ? `${data.kpis.revenue_growth} YoY` : "N/A";
+                revG.style.color = data.kpis.revenue_growth.includes('+') ? '#2e7d32' : (data.kpis.revenue_growth.includes('-') ? '#c62828' : '#666');
+
+                const niG = document.getElementById('kpi-ni-g');
+                niG.innerText = data.kpis.ni_growth !== "N/A" ? `${data.kpis.ni_growth} YoY` : "N/A";
+                niG.style.color = data.kpis.ni_growth.includes('+') ? '#2e7d32' : (data.kpis.ni_growth.includes('-') ? '#c62828' : '#666');
+            }
             
             document.getElementById('financial-loading').style.display = 'none';
             document.getElementById('financial-table').style.display = 'table';
@@ -1203,7 +1230,8 @@ function triggerStatementSummary() {
         return;
     }
 
-    const rawData = currentFinancialData[selection.value] || [];
+    const activeData = isTrendMode ? trendCache[selection.value] : currentFinancialData[selection.value];
+    const rawData = activeData || [];
     const cleanData = rawData.slice(0, 30).map(row => {
         let cleanRow = { label: row.label };
         Object.keys(row).forEach(k => { if (/^\d{4}-\d{2}-\d{2}/.test(k)) cleanRow[k] = row[k]; });
@@ -1289,62 +1317,116 @@ function triggerNarrativeSummary() {
     .finally(() => { aiBtn.disabled = false; aiBtn.innerText = "Summarize Section"; });
 }
 
+function toggleTrendView() {
+    isTrendMode = !isTrendMode;
+    const btn = document.getElementById('trend-btn');
+    
+    if (isTrendMode) {
+        btn.innerText = "Show Current Filing Only";
+        btn.style.background = "#d32f2f"; // Red when active
+    } else {
+        btn.innerText = "Show 5-Year Trend";
+        btn.style.background = "#1976d2"; // Blue when inactive
+    }
+    
+    renderSelectedStatement(); 
+}
+
 function renderSelectedStatement() {
     const selection = document.getElementById('statement-selector').value;
-    const data = currentFinancialData[selection];
-    
     const thead = document.getElementById('financial-head');
     const tbody = document.getElementById('financial-body');
+    const loading = document.getElementById('financial-loading');
+
+    // Hide AI box when switching views
+    if(document.getElementById('fin-ai-output')) document.getElementById('fin-ai-output').style.display = 'none';
+
+    if (isTrendMode) {
+        if (trendCache[selection]) {
+            buildFinancialTable(trendCache[selection], thead, tbody);
+        } else {
+            // Fetch 5-Year Data dynamically
+            thead.innerHTML = '';
+            tbody.innerHTML = '';
+            loading.style.display = 'block';
+            loading.innerText = `Stitching 5 years of ${selection} history...`;
+            document.getElementById('financial-table').style.display = 'none';
+            
+            const accNo = document.getElementById('cd-acc').innerText;
+            
+            fetch(`/api/trends/${accNo}/${selection}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) throw new Error(data.error);
+                    trendCache[selection] = data.trend_data;
+                    loading.style.display = 'none';
+                    document.getElementById('financial-table').style.display = 'table';
+                    buildFinancialTable(data.trend_data, thead, tbody);
+                })
+                .catch(err => {
+                    loading.innerText = `Trend Error: ${err.message}`;
+                    loading.style.color = "red";
+                });
+        }
+    } else {
+        // Standard Single Filing View
+        buildFinancialTable(currentFinancialData[selection], thead, tbody);
+    }
+}
+
+// Extracted the HTML building logic so it can handle ANY dataframe seamlessly
+function buildFinancialTable(data, thead, tbody) {
     thead.innerHTML = '';
     tbody.innerHTML = '';
-
+    
     if (!data || data.length === 0) {
-        tbody.innerHTML = '<tr><td class="loading">Statement not available in this filing.</td></tr>';
+        tbody.innerHTML = '<tr><td class="loading">Statement not available.</td></tr>';
         return;
     }
 
     const allKeys = Object.keys(data[0]);
-    
-    // SMART FILTER: Only keep the "label" column and columns that start with a YYYY-MM-DD date pattern.
-    // This instantly drops all the internal XBRL metadata (concept, weight, balance, etc.)
-    const displayCols = ['label', ...allKeys.filter(k => /^\d{4}-\d{2}-\d{2}/.test(k))];
+    // SMART FILTER: Matches YYYY-MM-DD OR "FY YYYY" / "CY YYYY"
+    const displayCols = ['label', ...allKeys.filter(k => /^(FY|CY)?\s?\d{4}/.test(k))];
 
-    // Build Header
     let headHtml = '<tr>';
     displayCols.forEach(col => {
-        // Rename 'label' to 'Line Item' for a cleaner UI, keep date strings as they are
         const title = col === 'label' ? 'Line Item' : col;
         headHtml += `<th>${title}</th>`;
     });
+    
+    // NEW: Add the Sparkline Header if we are in 5-Year Trend Mode
+    if (isTrendMode) {
+        headHtml += `<th style="text-align: center;">5-Yr Trend</th>`;
+    }
+    
     headHtml += '</tr>';
     thead.innerHTML = headHtml;
 
-    // Build Rows
     data.forEach(row => {
-        // Use the 'level' property to indent sub-items, even though we hid the column
-        const indent = row.level ? '&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(row.level) : '';
-        const isAbstract = row.abstract === true; 
+        const level = row.level !== undefined ? row.level : (row.depth || 0);
+        const indent = level > 0 ? '&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(level) : '';
+        const isAbstract = row.abstract === true || row.is_abstract === true; 
         
         let rowHtml = `<tr style="${isAbstract ? 'font-weight: bold; background-color: #f9f9f9;' : ''}">`;
         
+        let rowValues = []; // NEW: Array to collect numbers for the Sparkline
+
         displayCols.forEach(col => {
             let val = row[col];
             
+            // Collect numeric values (Skip the label column and abstract headers)
+            if (col !== 'label' && !isAbstract) {
+                if (typeof val === 'number') rowValues.push(val);
+                else rowValues.push(null);
+            }
+
             if (col === 'label') {
-                // Override nowrap to allow text wrapping, and set boundaries so it doesn't get too squished or too wide
                 rowHtml += `<td style="white-space: normal; min-width: 300px; max-width: 450px; line-height: 1.4;">${indent}${val}</td>`;
             } else {
-                // Formatting for the actual numerical data
-                if (val === "" || val === null) {
-                    // Render empty cells cleanly
+                if (val === "" || val === null || val === undefined) {
                     rowHtml += `<td class="num" style="color: #aaa; text-align: right;">-</td>`;
                 } else if (typeof val === 'number') {
-                    // Standard accounting format: commas for thousands, parentheses for negatives
-                    const formatted = val < 0 
-                        ? `(${Math.abs(val).toLocaleString('en-US')})` 
-                        : val.toLocaleString('en-US');
-                    
-                    // Highlight negative numbers slightly red for quick scanning
+                    const formatted = val < 0 ? `(${Math.abs(val).toLocaleString('en-US')})` : val.toLocaleString('en-US');
                     const colorStyle = val < 0 ? 'color: #d32f2f;' : '';
                     rowHtml += `<td class="num" style="text-align: right; ${colorStyle}">${formatted}</td>`;
                 } else {
@@ -1352,6 +1434,52 @@ function renderSelectedStatement() {
                 }
             }
         });
+
+        // ==========================================
+        // NEW: SVG SPARKLINE GENERATOR
+        // ==========================================
+        if (isTrendMode) {
+            if (isAbstract) {
+                rowHtml += `<td></td>`; // Leave cell blank for category headers
+            } else {
+                // Remove nulls and REVERSE the array so the chart reads Left (Oldest) to Right (Newest)
+                let validVals = rowValues.filter(v => v !== null).reverse();
+                
+                if (validVals.length > 1) {
+                    const min = Math.min(...validVals);
+                    const max = Math.max(...validVals);
+                    const range = max - min === 0 ? 1 : max - min; // Prevent division by zero
+                    
+                    const width = 80;
+                    const height = 24;
+                    
+                    // Map the numbers to X and Y coordinates on the SVG canvas
+                    let points = validVals.map((val, i) => {
+                        const x = (i / (validVals.length - 1)) * width;
+                        const y = height - (((val - min) / range) * height); // SVG Y-axis is inverted
+                        return `${x},${y}`;
+                    }).join(' ');
+
+                    // Color code the trend (Green = Up, Red = Down, Blue = Flat)
+                    const first = validVals[0];
+                    const last = validVals[validVals.length - 1];
+                    let strokeColor = "#0070f3"; 
+                    if (last > first) strokeColor = "#2e7d32"; 
+                    if (last < first) strokeColor = "#c62828"; 
+
+                    rowHtml += `<td style="vertical-align: middle; padding: 2px 15px; text-align: center;">
+                        <svg width="${width}" height="${height}" style="overflow: visible;">
+                            <polyline points="${points}" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </td>`;
+                } else {
+                    // Not enough data points to draw a line
+                    rowHtml += `<td style="color: #aaa; text-align: center; font-size: 10px;">-</td>`;
+                }
+            }
+        }
+        // ==========================================
+
         rowHtml += '</tr>';
         tbody.innerHTML += rowHtml;
     });
