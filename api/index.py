@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 import re
 import urllib.request
@@ -6,12 +7,14 @@ import urllib.request
 os.environ["EDGAR_LOCAL_DATA_DIR"] = "/tmp"
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from edgar import (
     set_identity,
     get_by_accession_number,
     Company,
 )
+from edgar.company_reports import TenK, TenQ
 from lxml import etree
 
 from groq import Groq
@@ -23,6 +26,8 @@ from supabase import create_client
 load_dotenv()
 
 app = FastAPI()
+app.mount("/public", StaticFiles(directory="public"), name="public")
+
 supabase = create_client(
     os.getenv("SUPABASE_URL"),  # https://PROJECT-ID.supabase.co
     os.getenv("SUPABASE_KEY"),  # API KEY (ANON)
@@ -85,6 +90,20 @@ class HoldTimeRequest(BaseModel):
     top_cusips: List[str]
 
 
+class StatementSummaryRequest(BaseModel):
+    company_name: str
+    form_type: str
+    statement_name: str
+    table_data: list
+
+
+class NarrativeSummaryRequest(BaseModel):
+    company_name: str
+    form_type: str
+    section_title: str
+    text_payload: str
+
+
 @app.post("/api/summarize-portfolio")
 def summarize_portfolio(data: SummaryRequest):
     try:
@@ -117,6 +136,59 @@ def summarize_portfolio(data: SummaryRequest):
 
         return JSONResponse(content={"summary": completion.choices[0].message.content})
 
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/summarize-statement")
+def summarize_statement(data: StatementSummaryRequest):
+    try:
+        system_instructions = (
+            f"You are an expert financial analyst examining the {data.statement_name} from a {data.form_type} SEC filing for {data.company_name}.\n"
+            "Analyze the numerical data provided. Highlight the biggest line items, major changes, margin health, or liquidity concerns. "
+            "Use clean, dense bullet points and bold key terms. Be highly specific with numbers. Do not hallucinate data not in the table."
+        )
+
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_instructions},
+                {
+                    "role": "user",
+                    "content": f"Here is the raw {data.statement_name} data:\n{str(data.table_data)}",
+                },
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,  # Extremely low temperature for strict numerical accuracy
+        )
+        return JSONResponse(content={"summary": completion.choices[0].message.content})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/summarize-narrative")
+def summarize_narrative(data: NarrativeSummaryRequest):
+    try:
+        # Cap text at 20,000 chars to protect the context window
+        safe_text = data.text_payload[:20000]
+
+        system_instructions = (
+            f"You are an expert financial analyst examining the '{data.section_title}' section of a {data.form_type} SEC filing for {data.company_name}.\n"
+            "Extract the core insights, management's forward-looking outlook, and any major operational or risk factors mentioned. "
+            "Use clean, dense bullet points and bold key terms."
+        )
+
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_instructions},
+                {
+                    "role": "user",
+                    "content": f"Here is the '{data.section_title}' text:\n\n{safe_text}",
+                },
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+        )
+        return JSONResponse(content={"summary": completion.choices[0].message.content})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -596,6 +668,124 @@ def get_company_insider_filings(cik: str):
         return JSONResponse(content={"filings": results, "company_name": comp.name})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/narrative/{accession_no}")
+def get_narrative_sections(accession_no: str):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return JSONResponse(status_code=404, content={"error": "Filing not found."})
+
+        sections = {}
+
+        # Parse based on Form Type
+        if filing.form in ["10-K", "10-K/A"]:
+            report = TenK(filing)
+            sections["Business (Item 1)"] = report["Item 1"]
+            sections["Risk Factors (Item 1A)"] = report["Item 1A"]
+            sections["Legal Proceedings (Item 3)"] = report["Item 3"]
+            sections["MD&A (Item 7)"] = report["Item 7"]
+
+        elif filing.form in ["10-Q", "10-Q/A"]:
+            report = TenQ(filing)
+            sections["MD&A (Item 2)"] = report["Item 2"]
+            # 10-Qs sometimes put risk & legal in Part II
+            sections["Risk Factors (Part II Item 1A)"] = report["Part II Item 1A"]
+            sections["Legal Proceedings (Part II Item 1)"] = report["Part II Item 1"]
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unsupported form type for narrative extraction."},
+            )
+
+        # Clean up the dictionary: Remove sections that the company left blank
+        clean_sections = {}
+        for key, text in sections.items():
+            if (
+                text and len(str(text).strip()) > 50
+            ):  # Ensure it's not just a blank placeholder
+                clean_sections[key] = str(text)
+
+        return JSONResponse(content={"sections": clean_sections})
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/financials/{accession_no}")
+def get_financial_statements(accession_no: str):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return JSONResponse(status_code=404, content={"error": "Filing not found."})
+
+        xbrl = filing.xbrl()
+        if not xbrl:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "No XBRL data found for this filing."},
+            )
+
+        statements = xbrl.statements
+
+        def extract_statement(stmt):
+            try:
+                # Check if the statement object actually exists
+                if stmt is not None:
+                    df = stmt.to_dataframe()
+
+                    # Prevent row labels (like "Net Income") from being stripped during JSON conversion
+                    df = df.reset_index()
+
+                    df = df.replace([np.inf, -np.inf], "")
+                    df = df.fillna("")
+                    return df.to_dict(orient="records")
+            except Exception as e:
+                print(f"Statement extraction failed: {e}")
+            return []
+
+        # Pass the property object directly, NO parenthesis!
+        income_data = extract_statement(statements.income_statement())
+        balance_data = extract_statement(statements.balance_sheet())
+        cashflow_data = extract_statement(statements.cashflow_statement())
+
+        return JSONResponse(
+            content={
+                "income_statement": income_data,
+                "balance_sheet": balance_data,
+                "cash_flow": cashflow_data,
+            }
+        )
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/raw/{accession_no}")
+def get_raw_sec_document(accession_no: str):
+    """Proxies the SEC HTML to bypass X-Frame-Options blocking."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return HTMLResponse(content="<h1>Filing not found.</h1>", status_code=404)
+
+        html_content = filing.html()
+
+        # Inject a base URL so the SEC's relative images and CSS links still load perfectly
+        if html_content and "<head>" in html_content:
+            html_content = html_content.replace(
+                "<head>", "<head><base href='https://www.sec.gov/'>"
+            )
+
+        return HTMLResponse(content=html_content or "<h1>No HTML content found.</h1>")
+    except Exception as e:
+        return HTMLResponse(
+            content=f"<h1>Error loading document: {str(e)}</h1>", status_code=500
+        )
 
 
 @app.get("/api/filings/formd")

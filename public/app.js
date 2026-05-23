@@ -1,0 +1,1411 @@
+// --- FILINGS STATE ---
+let currentFilingsPage = 1;
+
+// --- STOCKS STATE ---
+let allStocks = []; let filteredStocks = []; let currentStocksPage = 1;
+let sortColStocks = 'value_usd'; let sortAscStocks = false;
+
+// --- OPTIONS STATE ---
+let allOptions = []; let filteredOptions = []; let currentOptionsPage = 1;
+let sortColOptions = 'value_usd'; let sortAscOptions = false;
+
+// --- AI CACHE STATE ---
+let cachedPortfolioSummary = "";
+let cachedStatementSummaries = {};
+let cachedNarrativeSummaries = {};
+
+// ==========================================
+// GLOBAL SEARCH LOGIC
+// ==========================================
+let searchTimeout = null;
+
+function handleGlobalSearch(e) {
+    const query = e.target.value.trim();
+    const dropdown = document.getElementById('search-dropdown');
+    
+    // Hide dropdown if query is too short
+    if (query.length < 2) {
+        dropdown.style.display = 'none';
+        return;
+    }
+
+    // Debounce: Wait 300ms after the user stops typing before fetching
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        dropdown.style.display = 'block';
+        dropdown.innerHTML = '<div class="search-loading">Searching database...</div>';
+
+        fetch(`/api/search?q=${encodeURIComponent(query)}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error || !data.results || data.results.length === 0) {
+                    dropdown.innerHTML = '<div class="search-loading">No companies found.</div>';
+                    return;
+                }
+
+                dropdown.innerHTML = '';
+                data.results.forEach(res => {
+                    // When clicked, fetch this specific company's filings
+                    dropdown.innerHTML += `
+                        <div class="search-item" onclick="loadCompanyOverview('${res.cik}')">
+                            <span class="search-item-name">${res.name}</span>
+                            <span class="search-item-cik">CIK: ${res.cik}</span>
+                        </div>
+                    `;
+                });
+            })
+            .catch(err => {
+                dropdown.innerHTML = '<div class="search-loading" style="color: #ff5252;">Search failed.</div>';
+            });
+    }, 300);
+}
+
+function loadCompanyFilings(cik, companyName) {
+    // Close dropdown and reset search text
+    document.getElementById('search-dropdown').style.display = 'none';
+    document.getElementById('global-search-input').value = "";
+    
+    // Turn off global live auto-refresh
+    document.getElementById('auto-refresh-cb').checked = false;
+    toggleLiveMode();
+    
+    // Switch to Filings View, but DO NOT fetch global data (pass false)
+    showFilingsView(false); 
+    document.getElementById('page-title').innerText = `13F-HR History: ${companyName}`;
+    
+    const tbody = document.getElementById('filings-body');
+    tbody.innerHTML = `<tr><td colspan="5" class="loading">Loading SEC history for CIK ${cik}...</td></tr>`;
+    
+    // Disable pagination since we are viewing a single company
+    document.getElementById('f-prev').disabled = true;
+    document.getElementById('f-next').disabled = true;
+    document.getElementById('f-ind').innerText = "All Recent";
+
+    fetch(`/api/filings/company/${cik}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            tbody.innerHTML = '';
+            if (data.filings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;">No 13F-HR filings found for this entity.</td></tr>`;
+                return;
+            }
+            
+            data.filings.forEach((f, i) => {
+                tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                    <td>${i + 1}</td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                </tr>`;
+            });
+            updateTimestamp();
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="5" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+// Hide dropdown if user clicks anywhere else on the page
+document.addEventListener('click', function(event) {
+    const searchContainer = document.querySelector('.search-container');
+    const dropdown = document.getElementById('search-dropdown');
+    if (searchContainer && !searchContainer.contains(event.target)) {
+        dropdown.style.display = 'none';
+    }
+});
+
+// ==========================================
+// REAL-TIME AUTO REFRESH LOGIC
+// ==========================================
+let liveRefreshInterval = null;
+
+function toggleLiveMode() {
+    const isChecked = document.getElementById('auto-refresh-cb').checked;
+    const indicator = document.getElementById('live-indicator');
+    
+    if (isChecked) {
+        indicator.style.backgroundColor = "#2e7d32"; // Professional Green
+        liveRefreshInterval = setInterval(() => {
+            if (document.getElementById('filings-view').style.display === 'block' && currentFilingsPage === 1) {
+                silentFetchFilings();
+            }
+        }, 60000); 
+    } else {
+        indicator.style.backgroundColor = "#ccc"; // Inactive Gray
+        clearInterval(liveRefreshInterval);
+    }
+}
+
+function silentFetchFilings() {
+    fetch(`/api/filings?page=1`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) return;
+            
+            const tbody = document.getElementById('filings-body');
+            // Completely rebuild the table rows silently in the background
+            let newHtml = '';
+            data.filings.forEach((f, i) => {
+                newHtml += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                    <td>${i + 1}</td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                </tr>`;
+            });
+            
+            // Only update the DOM if the data is actually ready
+            if (newHtml !== '') {
+                tbody.innerHTML = newHtml;
+                updateTimestamp(); // <--- ADD THIS HERE
+            }
+        })
+        .catch(err => console.error("Background sync failed:", err));
+}
+
+// ==========================================
+// FILINGS LOGIC
+// ==========================================
+function changeFilingsPage(dir) {
+    if (currentFilingsPage + dir > 0) loadFilings(currentFilingsPage + dir);
+}
+
+function updateTimestamp() {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    document.getElementById('last-updated-text').innerText = `Updated: ${timeString}`;
+}
+
+function loadFilings(page) {
+    currentFilingsPage = page;
+    document.getElementById('f-ind').innerText = `Page ${page}`;
+    document.getElementById('f-prev').disabled = page === 1;
+    
+    // --- NEW: TOGGLE DISABLE LOGIC ---
+    const cb = document.getElementById('auto-refresh-cb');
+    const label = document.getElementById('live-toggle-label');
+    const indicator = document.getElementById('live-indicator');
+
+    if (page === 1) {
+        // Unlock the toggle on Page 1
+        cb.disabled = false;
+        label.style.color = "#555";
+        label.style.cursor = "pointer";
+    } else {
+        // Lock and turn off the toggle on Page 2+
+        cb.disabled = true;
+        cb.checked = false; // Force uncheck
+        label.style.color = "#aaa"; // Gray out text
+        label.style.cursor = "not-allowed";
+        indicator.style.backgroundColor = "#ccc"; // Reset dot to gray
+        clearInterval(liveRefreshInterval); // Stop the background polling
+    }
+    // ----------------------------------
+
+    const tbody = document.getElementById('filings-body');
+    tbody.innerHTML = `<tr><td colspan="5" class="loading">Loading page ${page}...</td></tr>`;
+
+    fetch(`/api/filings?page=${page}`)
+        .then(res => res.json())
+        .then(data => {
+            tbody.innerHTML = '';
+            document.getElementById('f-next').disabled = data.filings.length < 50;
+            const offset = (page - 1) * 50;
+            data.filings.forEach((f, i) => {
+                tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                    <td>${offset + i + 1}</td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                </tr>`;
+            });
+            updateTimestamp();
+        }).catch(err => tbody.innerHTML = `<tr><td colspan="5" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`);
+}
+
+// ==========================================
+// FETCH AND SPLIT HOLDINGS
+// ==========================================
+function fetchHoldings(accessionNo, updateUrl = true) {
+    cachedPortfolioSummary = "";
+
+    // NEW: Push the accession number to the browser URL
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('accession', accessionNo);
+        window.history.pushState({ accessionNo }, '', url);
+    }
+
+    document.getElementById('back-btn').onclick = () => switchModule(null, '13f');
+
+    showHoldingsView();
+    document.getElementById('c-name').innerText = "Loading data...";
+    document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
+    document.getElementById('options-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
+    document.getElementById('search-input').value = "";
+
+    fetch(`/api/holdings/${accessionNo}`)
+        .then(res => res.json())
+        .then(data => {
+            if(data.error) throw new Error(data.error);
+            
+            document.getElementById('c-name').innerText = data.company;
+            document.getElementById('c-cik').innerText = data.cik;
+            document.getElementById('c-period').innerText = data.report_period;
+            document.getElementById('c-date').innerText = data.filing_date;
+            document.getElementById('c-accepted').innerText = data.accepted_time;
+            document.getElementById('c-acc').innerText = accessionNo;
+            document.getElementById('c-link-index').href = data.sec_index_url;
+            document.getElementById('c-link-xml').href = data.sec_xml_url;
+            
+            const cd = data.company_details;
+            document.getElementById('c-cat').innerText = cd ? cd.category : "N/A";
+            document.getElementById('c-fye').innerText = cd ? cd.fiscal_year : "N/A";
+            document.getElementById('c-inc').innerText = cd ? cd.incorporated : "N/A";
+            document.getElementById('c-phone').innerText = cd ? cd.phone : "N/A";
+            document.getElementById('c-add').innerText = cd ? cd.address : "N/A";
+            
+            document.getElementById('c-recent').innerHTML = data.recent_filings.map(rf => 
+                `<span class="recent-link" onclick="fetchHoldings('${rf.accession_no}')">${rf.date}</span>`
+            ).join(' | ');
+
+            // SPLIT DATA INTO STOCKS AND OPTIONS
+            allStocks = data.holdings.filter(h => h.put_call === 'NONE' || !h.put_call);
+            allOptions = data.holdings.filter(h => h.put_call === 'PUT' || h.put_call === 'CALL');
+
+            // 1. Calculate Grand Totals First
+            const totalPortfolioValue = data.holdings.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+            const prevTotalValue = data.holdings.reduce((sum, item) => sum + (item.prev_value_usd || 0), 0);
+            
+            const totalEquityValue = allStocks.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+            const totalOptionsValue = allOptions.reduce((sum, item) => sum + (item.value_usd || 0), 0);
+            
+            let optionsRatio = "0.0x";
+            if (totalEquityValue > 0) {
+                optionsRatio = (totalOptionsValue / totalEquityValue).toFixed(2) + "x";
+            }
+            
+            const sortedByValue = [...data.holdings].sort((a, b) => b.value_usd - a.value_usd);
+            const top10Value = sortedByValue.slice(0, 10).reduce((sum, item) => sum + (item.value_usd || 0), 0);
+            
+            let concentrationPct = totalPortfolioValue > 0 ? (top10Value / totalPortfolioValue) * 100 : 0;
+
+            // 2. Loop through and calculate Weights, Deltas, and Turnover
+            let totalBuys = 0;
+            let totalSells = 0;
+
+            data.holdings.forEach(h => {
+                // Turnover calculations
+                if (h.status === 'New') {
+                    totalBuys += h.value_usd; 
+                } else if (h.status === 'Increased') {
+                    const pctAdded = h.change_shares / h.shares;
+                    totalBuys += (h.value_usd * pctAdded);
+                } else if (h.status === 'Closed') {
+                    totalSells += h.prev_value_usd; 
+                } else if (h.status === 'Decreased') {
+                    const pctSold = Math.abs(h.change_shares) / h.prev_shares;
+                    totalSells += (h.prev_value_usd * pctSold);
+                }
+
+                // NEW: Portfolio Weight & Weight Delta
+                const currentWeight = totalPortfolioValue > 0 ? (h.value_usd / totalPortfolioValue) * 100 : 0;
+                const prevWeight = prevTotalValue > 0 ? ((h.prev_value_usd || 0) / prevTotalValue) * 100 : 0;
+                
+                h.weight_pct = currentWeight.toFixed(2);
+                h.weight_delta = (currentWeight - prevWeight).toFixed(2);
+            });
+
+            // 3. Turnover Formula: min(Buys, Sells) / Average AUM
+            let turnoverPct = 0;
+            let hasHistory = prevTotalValue > 0;
+            if (hasHistory && totalPortfolioValue > 0) {
+                const avgAUM = (prevTotalValue + totalPortfolioValue) / 2;
+                turnoverPct = (Math.min(totalBuys, totalSells) / avgAUM) * 100;
+            }
+
+            // 4. Inject calculations into UI panel
+            const aumMillions = (totalPortfolioValue / 1000).toFixed(2);
+            document.getElementById('c-aum').innerText = `$${parseFloat(aumMillions).toLocaleString()}M`;
+            document.getElementById('c-concentration').innerText = `${concentrationPct.toFixed(2)}%`;
+            document.getElementById('c-options').innerText = optionsRatio;
+            document.getElementById('c-turnover').innerText = hasHistory ? `${turnoverPct.toFixed(2)}%` : "N/A (No previous quarter)";
+            
+            // --- START ASYNC HOLD TIME CALCULATION ---
+            document.getElementById('c-holdtime').innerText = "Calculating...";
+            document.getElementById('c-holdtime').style.color = "#888";
+            
+            const top10Cusips = sortedByValue.slice(0, 10).map(h => h.cusip).filter(c => c && c !== 'N/A');
+            
+            fetch('/api/metrics/holdtime', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    cik: data.cik.toString(),
+                    accession_no: accessionNo,
+                    top_cusips: top10Cusips
+                })
+            })
+            .then(res => res.json())
+            .then(metricData => {
+                if(metricData.error) throw new Error(metricData.error);
+                document.getElementById('c-holdtime').innerText = `${metricData.avg_top_10_hold} Qtrs`;
+                document.getElementById('c-holdtime').style.color = "#111"; // Shift color to dark to indicate completion
+                document.getElementById('c-holdtime').style.fontStyle = "normal";
+            })
+            .catch(err => {
+                document.getElementById('c-holdtime').innerText = "Data Unavailable";
+                console.error("Hold time calc failed:", err);
+            });
+            // --- END ASYNC HOLD TIME CALCULATION ---
+
+            // Visual bar adjustment
+            document.getElementById('concentration-bar-wrapper').style.display = 'block';
+            document.getElementById('concentration-bar').style.width = `${concentrationPct}%`;
+            
+            // Color code bar based on high conviction vs diversification thresholds
+            if (concentrationPct >= 60) {
+                document.getElementById('concentration-bar').style.backgroundColor = '#d32f2f';
+            } else if (concentrationPct >= 35) {
+                document.getElementById('concentration-bar').style.backgroundColor = '#0070f3';
+            } else {
+                document.getElementById('concentration-bar').style.backgroundColor = '#2e7d32';
+            }
+            // --- END CONCENTRATION STAGE ---
+            
+            filteredStocks = [...allStocks];
+            filteredOptions = [...allOptions];
+            
+            sortColStocks = 'value_usd'; sortAscStocks = false;
+            sortColOptions = 'value_usd'; sortAscOptions = false;
+            
+            executeSortStocks();
+            executeSortOptions();
+        }).catch(err => {
+            document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+            document.getElementById('options-body').innerHTML = '';
+        });
+}
+
+// ==========================================
+// SHARED LOGIC (SEARCH & ROW HTML)
+// ==========================================
+function handleSearch(e) {
+    const q = e.target.value.toLowerCase();
+    const filterFn = h => 
+        (h.ticker && h.ticker.toLowerCase().includes(q)) || 
+        (h.issuer && h.issuer.toLowerCase().includes(q)) || // <-- ADD THIS LINE
+        (h.cusip && h.cusip.toLowerCase().includes(q)) || 
+        (h.class && h.class.toLowerCase().includes(q));
+    
+    filteredStocks = allStocks.filter(filterFn);
+    filteredOptions = allOptions.filter(filterFn);
+    
+    currentStocksPage = 1; currentOptionsPage = 1;
+    executeSortStocks(); executeSortOptions();
+}
+
+function createRowHtml(h) {
+    let optBadge = `<span style="color:#aaa;">-</span>`;
+    if (h.put_call === 'PUT') optBadge = `<span class="badge badge-put">PUT</span>`;
+    if (h.put_call === 'CALL') optBadge = `<span class="badge badge-call">CALL</span>`;
+
+    // Format the Shares Delta column
+    let deltaHtml = `<span class="status-same">-</span>`;
+    if (h.status === 'New') {
+        deltaHtml = `<span class="status-new">NEW</span>`;
+    } else if (h.status === 'Closed') {
+        deltaHtml = `<span class="status-closed">CLOSED</span>`;
+    } else if (h.status === 'Increased') {
+        deltaHtml = `<span class="status-inc">▲ ${h.change_pct}%</span><br><span style="font-size:9px; color:#888;">+${h.change_shares.toLocaleString()} sh</span>`;
+    } else if (h.status === 'Decreased') {
+        deltaHtml = `<span class="status-dec">▼ ${Math.abs(h.change_pct)}%</span><br><span style="font-size:9px; color:#888;">${h.change_shares.toLocaleString()} sh</span>`;
+    }
+
+    // NEW: Format the Weight Delta sub-text
+    let weightDeltaHtml = `<span style="color: #888; font-size: 10px;">(-)</span>`;
+    if (h.status === 'New') {
+        weightDeltaHtml = `<span style="color: #2e7d32; font-size: 10px;">(New)</span>`;
+    } else if (h.weight_delta > 0) {
+        weightDeltaHtml = `<span style="color: #2e7d32; font-size: 10px;">(+${h.weight_delta}%)</span>`;
+    } else if (h.weight_delta < 0) {
+        weightDeltaHtml = `<span style="color: #c62828; font-size: 10px;">(${h.weight_delta}%)</span>`;
+    }
+
+    // Dim rows that are closed out
+    const rowStyle = h.status === 'Closed' ? 'opacity: 0.6; background: #fdfdfd;' : '';
+
+    return `<tr style="${rowStyle}">
+        <td class="ticker">${h.ticker}</td>
+        <td style="font-weight: 500; color: #111;">${h.issuer}</td> <td class="mono">${h.cusip}</td>
+        <td>${h.class}</td>
+        <td style="font-weight: bold; color: #444;">
+            ${h.weight_pct}%<br>${weightDeltaHtml}
+        </td>
+        <td><span class="badge">${h.share_type}</span></td>
+        <td class="num">${h.shares.toLocaleString()}</td>
+        <td class="num">$${h.value_usd.toLocaleString()}</td>
+        <td class="num" style="border-left: 2px solid #eee;">${deltaHtml}</td>
+        <td><span class="badge">${h.discretion}</span></td>
+        <td>${optBadge}</td>
+    </tr>`;
+}
+
+// ==========================================
+// STOCKS TABLE LOGIC
+// ==========================================
+function sortStocks(col) {
+    if (sortColStocks === col) sortAscStocks = !sortAscStocks;
+    else { sortColStocks = col; sortAscStocks = true; }
+    executeSortStocks();
+}
+
+function executeSortStocks() {
+    filteredStocks.sort((a, b) => {
+        let vA = a[sortColStocks]; let vB = b[sortColStocks];
+        if (typeof vA === 'string') vA = vA.toLowerCase();
+        if (typeof vB === 'string') vB = vB.toLowerCase();
+        if (vA < vB) return sortAscStocks ? -1 : 1;
+        if (vA > vB) return sortAscStocks ? 1 : -1;
+        return 0;
+    });
+    currentStocksPage = 1;
+    renderStocksTable();
+}
+
+function changeStocksPage(dir) {
+    const maxPage = Math.ceil(filteredStocks.length / 50);
+    if (currentStocksPage + dir > 0 && currentStocksPage + dir <= maxPage) {
+        currentStocksPage += dir; renderStocksTable();
+    }
+}
+
+function renderStocksTable() {
+    const tbody = document.getElementById('stocks-body');
+    document.getElementById('s-total').innerText = filteredStocks.length.toLocaleString();
+    document.getElementById('s-ind').innerText = `Page ${currentStocksPage}`;
+    
+    const totalPages = Math.ceil(filteredStocks.length / 50) || 1;
+    document.getElementById('s-prev').disabled = currentStocksPage === 1;
+    document.getElementById('s-next').disabled = currentStocksPage === totalPages;
+
+    tbody.innerHTML = '';
+    if (filteredStocks.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching stock holdings found.</td></tr>`;
+        return;
+    }
+
+    const start = (currentStocksPage - 1) * 50;
+    filteredStocks.slice(start, start + 50).forEach(h => tbody.innerHTML += createRowHtml(h));
+}
+
+// ==========================================
+// OPTIONS TABLE LOGIC
+// ==========================================
+function sortOptions(col) {
+    if (sortColOptions === col) sortAscOptions = !sortAscOptions;
+    else { sortColOptions = col; sortAscOptions = true; }
+    executeSortOptions();
+}
+
+function executeSortOptions() {
+    filteredOptions.sort((a, b) => {
+        let vA = a[sortColOptions]; let vB = b[sortColOptions];
+        if (typeof vA === 'string') vA = vA.toLowerCase();
+        if (typeof vB === 'string') vB = vB.toLowerCase();
+        if (vA < vB) return sortAscOptions ? -1 : 1;
+        if (vA > vB) return sortAscOptions ? 1 : -1;
+        return 0;
+    });
+    currentOptionsPage = 1;
+    renderOptionsTable();
+}
+
+function changeOptionsPage(dir) {
+    const maxPage = Math.ceil(filteredOptions.length / 50);
+    if (currentOptionsPage + dir > 0 && currentOptionsPage + dir <= maxPage) {
+        currentOptionsPage += dir; renderOptionsTable();
+    }
+}
+
+function renderOptionsTable() {
+    const tbody = document.getElementById('options-body');
+    document.getElementById('o-total').innerText = filteredOptions.length.toLocaleString();
+    document.getElementById('o-ind').innerText = `Page ${currentOptionsPage}`;
+    
+    const totalPages = Math.ceil(filteredOptions.length / 50) || 1;
+    document.getElementById('o-prev').disabled = currentOptionsPage === 1;
+    document.getElementById('o-next').disabled = currentOptionsPage === totalPages;
+
+    tbody.innerHTML = '';
+    if (filteredOptions.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No matching option holdings found.</td></tr>`;
+        return;
+    }
+
+    const start = (currentOptionsPage - 1) * 50;
+    filteredOptions.slice(start, start + 50).forEach(h => tbody.innerHTML += createRowHtml(h));
+}
+
+function triggerAiSummary() {
+    const outputBox = document.getElementById('summary-output');
+    const aiBtn = document.getElementById('ai-btn');
+    
+    // 1. CHECK CACHE FIRST
+    if (cachedPortfolioSummary) {
+        outputBox.innerHTML = marked.parse(cachedPortfolioSummary);
+        outputBox.style.color = "#333";
+        outputBox.style.fontStyle = "normal";
+        return; // Exit early without fetching!
+    }
+
+    aiBtn.disabled = true;
+    aiBtn.innerText = "Analyzing Portfolio...";
+    outputBox.innerText = "Llama 3.3 is parsing the filing matrix and evaluating concentration layout...";
+    outputBox.style.color = "#666";
+    outputBox.style.fontStyle = "italic";
+
+    const completeDataPayload = [...allStocks, ...allOptions];
+    const currentCompanyName = document.getElementById('c-name').innerText;
+
+    fetch('/api/summarize-portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            company_name: currentCompanyName,
+            holdings: completeDataPayload,
+            user_prompt: "Provide a sharp, high-level summary of this portfolio's top structural holdings, major new directional bets, and options risk/leverage positioning."
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.error) throw new Error(data.error);
+        
+        // 2. SAVE TO CACHE
+        cachedPortfolioSummary = data.summary;
+        
+        outputBox.innerHTML = marked.parse(data.summary);
+        outputBox.style.color = "#333";
+        outputBox.style.fontStyle = "normal";
+    })
+    .catch(err => {
+        outputBox.innerText = `Analysis Failed: ${err.message}`;
+        outputBox.style.color = "red";
+        outputBox.style.fontStyle = "normal";
+    })
+    .finally(() => {
+        aiBtn.disabled = false;
+        aiBtn.innerText = "Summarize with AI";
+    });
+}
+
+// --- CORPORATE STATE ---
+let currentCorporatePage = 1;
+let currentModule = '13f'; // Track which module is active
+
+function switchModule(event, module, updateUrl = true) {
+    if (event) event.preventDefault();
+    currentModule = module;
+    
+    // NEW: Save the active module to the URL so refreshes remember where you are
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', module);
+        url.searchParams.delete('accession'); 
+        
+        // Clean up any Corporate Document data
+        url.searchParams.delete('doc');
+        url.searchParams.delete('c');
+        url.searchParams.delete('f');
+        url.searchParams.delete('p');
+        url.searchParams.delete('d');
+        url.searchParams.delete('s');
+        window.history.pushState({ module: module }, '', url);
+    }
+    
+    // Clear all active states safely
+    document.getElementById('nav-13f').classList.remove('active');
+    if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
+    if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
+    if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+    
+    // Route to the correct view (passing false so we don't overwrite the URL we just set)
+    if (module === '13f') {
+        document.getElementById('nav-13f').classList.add('active');
+        showFilingsView(true, false, true); 
+    } else if (module === 'corp') {
+        document.getElementById('nav-corp').classList.add('active');
+        showCorporateView(true, false, true);
+    } else if (module === 'insider') {
+        document.getElementById('nav-insider').classList.add('active');
+        showInsiderView(true, false, true);
+    } else if (module === 'formd') {
+        document.getElementById('nav-formd').classList.add('active');
+        showFormDView(true, false, true);
+    }
+}
+
+function showFilingsView(fetchData = true, updateUrl = true, resetPage = false) {
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.delete('accession');
+        window.history.pushState({}, '', url);
+    }
+    if (resetPage) currentFilingsPage = 1;
+
+    // Hide everything else
+    document.getElementById('holdings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    
+    document.getElementById('filings-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
+    document.getElementById('page-title').innerText = "Latest 13F-HR Filings";
+    
+    if (fetchData) loadFilings(currentFilingsPage);
+}
+
+function showHoldingsView() {
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    
+    document.getElementById('holdings-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none'; 
+    document.getElementById('page-title').innerText = "SEC 13F-HR Holdings Detail";
+}
+
+function showCorporateView(fetchData = true, updateUrl = true, resetPage = false) {
+    if (resetPage) currentCorporatePage = 1;
+
+    document.getElementById('holdings-view').style.display = 'none';
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    
+    document.getElementById('corporate-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
+    document.getElementById('page-title').innerText = "Latest 10-Q & 10-K Filings";
+    
+    if (fetchData) loadCorporateFilings(currentCorporatePage);
+}
+
+function showInsiderView(fetchData = true, updateUrl = true, resetPage = false) {
+    if (resetPage) currentInsiderPage = 1;
+
+    document.getElementById('holdings-view').style.display = 'none';
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    
+    document.getElementById('insider-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
+    document.getElementById('page-title').innerText = "Latest Form 4 Insider Trades";
+    
+    if (fetchData) loadInsiderFilings(currentInsiderPage);
+}
+
+function loadCorporateFilings(page) {
+    currentCorporatePage = page;
+    document.getElementById('c-ind').innerText = `Page ${page}`;
+    document.getElementById('c-prev').disabled = page === 1;
+
+    const tbody = document.getElementById('corporate-body');
+    tbody.innerHTML = `<tr><td colspan="8" class="loading">Loading page ${page}...</td></tr>`;
+
+    fetch(`/api/filings/corporate?page=${page}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            tbody.innerHTML = '';
+            document.getElementById('c-next').disabled = data.filings.length < 50;
+            const offset = (page - 1) * 50;
+            
+            if (data.filings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No corporate filings found.</td></tr>`;
+                return;
+            }
+            
+            data.filings.forEach((f, i) => {
+                // Color code the form badge
+                const badgeColor = f.form === '10-K' ? 'background: #4a148c; color: white;' : 'background: #ff9800; color: white;';
+                
+                // Build URLs directly to the SEC 
+                const cikStripped = String(f.cik).replace(/^0+/, '');
+                const accStripped = String(f.accession_no).replace(/-/g, '');
+                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+
+                const safeCompany = f.company ? String(f.company).replace(/'/g, "&apos;").replace(/"/g, "&quot;") : "N/A";
+                const reportPeriod = f.report_period || "N/A";
+
+                tbody.innerHTML += `<tr>
+                    <td>${offset + i + 1}</td>
+                    <td><span class="badge" style="${badgeColor}">${f.form}</span></td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> 
+                    <td>${f.date}</td>
+                    <td class="mono">
+                        <a href="javascript:void(0);" onclick="openCorporateDocument('${safeCompany}', '${f.form}', '${reportPeriod}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                           style="color: #0070f3; text-decoration: underline; font-weight: bold;" title="Read Document">
+                            ${f.accession_no}
+                        </a>
+                    </td>
+                    <td style="display: flex; gap: 8px;">
+                        <button onclick="openCorporateDocument('${safeCompany}', '${f.form}', '${reportPeriod}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                                class="btn-primary" style="padding: 4px 8px; font-size: 11px;">
+                            Read Document
+                        </button>
+                        <a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;">View SEC ↗</a>
+                    </td>
+                </tr>`;
+            });
+            // Re-use your existing timestamp function
+            updateTimestamp();
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+function changeCorporatePage(dir) {
+    if (currentCorporatePage + dir > 0) loadCorporateFilings(currentCorporatePage + dir);
+}
+
+// ==========================================
+// INSIDER FILINGS LOGIC (FORM 4)
+// ==========================================
+let currentInsiderPage = 1;
+
+function loadInsiderFilings(page) {
+    currentInsiderPage = page;
+    document.getElementById('i-ind').innerText = `Page ${page}`;
+    document.getElementById('i-prev').disabled = page === 1;
+
+    const tbody = document.getElementById('insider-body');
+    tbody.innerHTML = `<tr><td colspan="8" class="loading">Loading page ${page}...</td></tr>`;
+
+    let fetchUrl = `/api/filings/insider?page=${page}`;
+    if (page === 1) {
+        fetchUrl += `&_t=${Date.now()}`;
+    }
+
+    fetch(fetchUrl)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            tbody.innerHTML = '';
+            document.getElementById('i-next').disabled = data.filings.length < 50;
+            const offset = (page - 1) * 50;
+            
+            if (data.filings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No Form 4 filings found.</td></tr>`;
+                return;
+            }
+            
+            data.filings.forEach((f, i) => {
+                const cikStripped = String(f.cik).replace(/^0+/, '');
+                const accStripped = String(f.accession_no).replace(/-/g, '');
+                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+
+                tbody.innerHTML += `<tr>
+                    <td>${offset + i + 1}</td>
+                    <td><span class="badge" style="background: #0070f3; color: white;">${f.form}</span></td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> 
+                    <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                    <td><a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none;">View SEC ↗</a></td>
+                </tr>`;
+            });
+            
+            updateTimestamp();
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+function changeInsiderPage(dir) {
+    if (currentInsiderPage + dir > 0) loadInsiderFilings(currentInsiderPage + dir);
+}
+
+// --- FORM D STATE & LOGIC ---
+let currentFormDPage = 1;
+
+function showFormDView(fetchData = true, updateUrl = true, resetPage = false) {
+    if (resetPage) currentFormDPage = 1;
+
+    // Hide all other views
+    document.getElementById('holdings-view').style.display = 'none';
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    
+    // Show Form D view
+    document.getElementById('formd-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
+    document.getElementById('page-title').innerText = "Latest Form D Offerings";
+    
+    if (fetchData) loadFormDFilings(currentFormDPage);
+}
+
+function loadFormDFilings(page) {
+    currentFormDPage = page;
+    document.getElementById('d-ind').innerText = `Page ${page}`;
+    document.getElementById('d-prev').disabled = page === 1;
+
+    const tbody = document.getElementById('formd-body');
+    tbody.innerHTML = `<tr><td colspan="8" class="loading">Loading page ${page}...</td></tr>`;
+
+    let fetchUrl = `/api/filings/formd?page=${page}`;
+    if (page === 1) fetchUrl += `&_t=${Date.now()}`; // Cache buster for the freshest data
+
+    fetch(fetchUrl)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            tbody.innerHTML = '';
+            document.getElementById('d-next').disabled = data.filings.length < 50;
+            const offset = (page - 1) * 50;
+            
+            if (data.filings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;">No Form D filings found.</td></tr>`;
+                return;
+            }
+            
+            data.filings.forEach((f, i) => {
+                const cikStripped = String(f.cik).replace(/^0+/, '');
+                const accStripped = String(f.accession_no).replace(/-/g, '');
+                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+
+                // Distinct badge color for Form D vs D/A
+                const badgeStyle = f.form === 'D/A' 
+                    ? 'background: #9c27b0; color: white;' // Purple for amended
+                    : 'background: #673ab7; color: white;'; // Deep purple for initial
+
+                tbody.innerHTML += `<tr>
+                    <td>${offset + i + 1}</td>
+                    <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
+                    <td style="font-weight: bold;">${f.company}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.report_period}</td> 
+                    <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                    <td><a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none;">View SEC ↗</a></td>
+                </tr>`;
+            });
+            
+            updateTimestamp();
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="8" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+function changeFormDPage(dir) {
+    if (currentFormDPage + dir > 0) loadFormDFilings(currentFormDPage + dir);
+}
+
+// --- NEW ROUTER VIEW ---
+function showOverviewView() {
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+
+    document.getElementById('holdings-view').style.display = 'none';
+    
+    document.getElementById('overview-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "Company Overview";
+}
+
+// --- NEW DATA FETCHER ---
+function loadCompanyOverview(cik) {
+    // Close dropdown and reset search
+    document.getElementById('search-dropdown').style.display = 'none';
+    document.getElementById('global-search-input').value = "";
+    
+    // Turn off live refresh
+    document.getElementById('auto-refresh-cb').checked = false;
+    toggleLiveMode();
+    
+    showOverviewView();
+    document.getElementById('ov-name').innerText = "Fetching SEC Database...";
+    
+    const tbody = document.getElementById('overview-body');
+    tbody.innerHTML = `<tr><td colspan="6" class="loading">Loading comprehensive history for CIK ${cik}...</td></tr>`;
+
+    fetch(`/api/company/${cik}/overview`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            // Populate Header Details
+            const d = data.details;
+            document.getElementById('page-title').innerText = d.name;
+            document.getElementById('ov-name').innerText = d.name;
+            document.getElementById('ov-cik').innerText = d.cik;
+            document.getElementById('ov-cat').innerText = d.category;
+            document.getElementById('ov-fye').innerText = d.fiscal_year;
+            document.getElementById('ov-inc').innerText = d.incorporated;
+            document.getElementById('ov-phone').innerText = d.phone;
+            document.getElementById('ov-add').innerText = d.address;
+
+            // Populate Mixed Filings Table
+            tbody.innerHTML = '';
+            if (data.filings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No filings found for this entity.</td></tr>`;
+                return;
+            }
+            
+            data.filings.forEach((f, i) => {
+                const cikStripped = String(d.cik).replace(/^0+/, '');
+                const accStripped = String(f.accession_no).replace(/-/g, '');
+                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+
+                // Give the badges different colors based on form type for scannability
+                let badgeStyle = "background: #e0e0e0; color: #333;";
+                if (f.form.includes('13F')) badgeStyle = "background: #2e7d32; color: white;";
+                else if (f.form.includes('10-K') || f.form.includes('10-Q')) badgeStyle = "background: #ff9800; color: white;";
+                else if (f.form === '4' || f.form === '4/A') badgeStyle = "background: #0070f3; color: white;";
+                else if (f.form.includes('8-K')) badgeStyle = "background: #c62828; color: white;";
+
+                // Smart Actions: If it's a 13F-HR, let them jump into the deep dive holdings view.
+                // Otherwise, just link them to the raw SEC document.
+                let actionHtml = `<a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;">View SEC ↗</a>`;
+
+                if (f.form === '13F-HR') {
+                    actionHtml = `<button onclick="fetchHoldings('${f.accession_no}')" class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #2e7d32;">Analyze Portfolio 📊</button>`;
+                } else if (f.form === '10-K' || f.form === '10-Q') {
+                    // Safely escape the global company name and handle missing periods
+                    const safeCompany = data.company ? String(data.company).replace(/'/g, "&apos;").replace(/"/g, "&quot;") : "N/A";
+                    const rPeriod = f.report_period || "N/A";
+                    const rDate = f.filing_date || f.date || "N/A"; // Handle both naming conventions
+
+                    actionHtml = `<button onclick="openCorporateDocument('${safeCompany}', '${f.form}', '${rPeriod}', '${rDate}', '${f.accession_no}', '${secHtmlUrl}')" 
+                                    class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #ff9800;">Read Document</button>`;
+                }
+
+                tbody.innerHTML += `<tr>
+                    <td>${i + 1}</td>
+                    <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
+                    <td>${f.report_period}</td> 
+                    <td>${f.date}</td>
+                    <td class="mono">${f.accession_no}</td>
+                    <td>${actionHtml}</td>
+                </tr>`;
+            });
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+// --- CORPORATE VIEWER STATE ---
+let currentFinancialData = { income: [], balance: [], cash: [] };
+
+function openCorporateDocument(company, form, period, date, accession_no, secUrl, updateUrl = true) {
+    // 1. Fallback to ensure we never crash on undefined variables
+    const safeCompany = company && company !== 'undefined' ? company : "Unknown Company";
+    const safeForm = form && form !== 'undefined' ? form : "N/A";
+    const safePeriod = period && period !== 'undefined' ? period : "N/A";
+    const safeDate = date && date !== 'undefined' ? date : "N/A";
+    const safeAcc = accession_no && accession_no !== 'undefined' ? accession_no : "N/A";
+
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', 'corp');
+        url.searchParams.set('doc', safeAcc);
+        url.searchParams.set('c', safeCompany);
+        url.searchParams.set('f', safeForm);
+        url.searchParams.set('p', safePeriod);
+        url.searchParams.set('d', safeDate);
+        url.searchParams.set('s', secUrl);
+        window.history.pushState({ doc: safeAcc }, '', url);
+    }
+
+    document.getElementById('back-btn').onclick = () => switchModule(null, 'corp');
+
+    // 2. Hide all other views
+    document.getElementById('filings-view').style.display = 'none';
+    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if (document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
+    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+
+    // 3. Show the document view
+    document.getElementById('corp-doc-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "Corporate Financials";
+
+    // 4. Populate metadata safely
+    document.getElementById('cd-company-name').innerText = safeCompany;
+    document.getElementById('cd-form').innerText = safeForm;
+    document.getElementById('cd-period').innerText = safePeriod;
+    document.getElementById('cd-date').innerText = safeDate;
+    document.getElementById('cd-acc').innerText = safeAcc;
+
+    // Attach the external SEC URL to the new link we added
+    document.getElementById('cd-raw-link').href = secUrl;
+
+    // Reset UI and Clear Caches
+    if (document.getElementById('fin-ai-output')) document.getElementById('fin-ai-output').style.display = 'none';
+    if (document.getElementById('narr-ai-output')) document.getElementById('narr-ai-output').style.display = 'none';
+    
+    if (typeof currentNarrativeData !== 'undefined') currentNarrativeData = {}; 
+    cachedStatementSummaries = {};
+    cachedNarrativeSummaries = {};
+    
+    // BYPASS SEC BLOCKING: Use our FastAPI proxy endpoint instead of secUrl
+    document.getElementById('sec-iframe').src = `/api/raw/${accession_no}`;
+    
+    switchCorpTab('financials');
+    
+    // Fetch Native Financials
+    document.getElementById('financial-table').style.display = 'none';
+    document.getElementById('financial-loading').style.display = 'block';
+    document.getElementById('financial-loading').innerText = "Extracting XBRL Financials from SEC...";
+
+    fetch(`/api/financials/${accession_no}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            currentFinancialData.income = data.income_statement || [];
+            currentFinancialData.balance = data.balance_sheet || [];
+            currentFinancialData.cash = data.cash_flow || [];
+            
+            document.getElementById('financial-loading').style.display = 'none';
+            document.getElementById('financial-table').style.display = 'table';
+            document.getElementById('statement-selector').value = "income";
+            renderSelectedStatement();
+        })
+        .catch(err => {
+            document.getElementById('financial-loading').innerText = `XBRL Error: ${err.message}`;
+            document.getElementById('financial-loading').style.color = "red";
+        });
+}
+
+// --- NARRATIVE EXPLORER STATE ---
+let currentNarrativeData = {};
+
+function switchCorpTab(tab) {
+    document.getElementById('tab-financials').style.display = tab === 'financials' ? 'block' : 'none';
+    document.getElementById('tab-raw').style.display = tab === 'raw' ? 'block' : 'none';
+    
+    // Narrative uses 'flex' instead of 'block' for the sidebar layout
+    document.getElementById('tab-narrative').style.display = tab === 'narrative' ? 'flex' : 'none'; 
+    
+    // Lazy-load the narrative data only when the user clicks the tab for the first time
+    if (tab === 'narrative' && Object.keys(currentNarrativeData).length === 0) {
+        const accNo = document.getElementById('cd-acc').innerText;
+        loadNarrativeExplorer(accNo);
+    }
+}
+
+let activeNarrativeKey = "";
+
+function loadNarrativeExplorer(accession_no) {
+    const sidebar = document.getElementById('narrative-sidebar');
+    const content = document.getElementById('narrative-content');
+    
+    sidebar.innerHTML = '<div class="loading">Extracting SEC text...</div>';
+    content.innerHTML = '<h3 style="margin-top: 0; color: #888;">Loading document sections...</h3>';
+    
+    fetch(`/api/narrative/${accession_no}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            currentNarrativeData = data.sections || {};
+            sidebar.innerHTML = '<strong style="display: block; margin-bottom: 15px; color: #111; font-size: 14px;">Document Index</strong>';
+            
+            const keys = Object.keys(currentNarrativeData);
+            if (keys.length === 0) {
+                sidebar.innerHTML += '<div style="color: red; font-size: 13px;">No narrative sections found.</div>';
+                content.innerHTML = '';
+                return;
+            }
+            
+            keys.forEach((key, index) => {
+                const btn = document.createElement('button');
+                btn.innerText = key;
+                btn.style.cssText = "display: block; width: 100%; text-align: left; padding: 10px; margin-bottom: 8px; background: white; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s;";
+                
+                btn.onclick = () => {
+                    Array.from(sidebar.getElementsByTagName('button')).forEach(b => {
+                        b.style.backgroundColor = 'white'; b.style.borderColor = '#ccc'; b.style.fontWeight = 'normal';
+                    });
+                    btn.style.backgroundColor = '#f3e5f5'; btn.style.borderColor = '#4a148c'; btn.style.fontWeight = 'bold';
+                    
+                    // Track which section is currently active for the AI
+                    activeNarrativeKey = key;
+                    const formattedText = currentNarrativeData[key].replace(/\n/g, '<br>');
+                    
+                    // INJECT THE AI BUTTON DIRECTLY INTO THE HEADER!
+                    content.innerHTML = `
+                        <h2 style="margin-top:0; color:#111; border-bottom: 2px solid #eee; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                            <span>${key}</span>
+                            <button id="narr-ai-btn" class="btn-primary" style="background: #4a148c; font-size: 12px; padding: 6px 10px;" onclick="triggerNarrativeSummary()">Summarize Section</button>
+                        </h2>
+                        <div id="narr-ai-output" style="background: #fdfdfd; border: 1px solid #e0e0e0; padding: 15px; border-radius: 6px; margin-bottom: 20px; display: none; font-size: 14px; line-height: 1.6; color: #333;"></div>
+                        <div style="margin-top: 20px;">${formattedText}</div>
+                    `;
+                    content.scrollTop = 0;
+                };
+                sidebar.appendChild(btn);
+                if (index === 0) btn.click();
+            });
+        })
+        .catch(err => sidebar.innerHTML = `<div style="color:red; font-size: 13px;">Error: ${err.message}</div>`);
+}
+
+// 2. NEW FUNCTION: Summarize specific Financial Statements
+function triggerStatementSummary() {
+    const outputBox = document.getElementById('fin-ai-output');
+    const aiBtn = document.getElementById('fin-ai-btn');
+    const selection = document.getElementById('statement-selector');
+    const statementName = selection.options[selection.selectedIndex].text;
+    
+    // 1. CHECK CACHE FIRST
+    if (cachedStatementSummaries[statementName]) {
+        outputBox.style.display = 'block';
+        outputBox.innerHTML = marked.parse(cachedStatementSummaries[statementName]);
+        outputBox.style.color = "#333";
+        outputBox.style.fontStyle = "normal";
+        return;
+    }
+
+    const rawData = currentFinancialData[selection.value] || [];
+    const cleanData = rawData.slice(0, 30).map(row => {
+        let cleanRow = { label: row.label };
+        Object.keys(row).forEach(k => { if (/^\d{4}-\d{2}-\d{2}/.test(k)) cleanRow[k] = row[k]; });
+        return cleanRow;
+    });
+
+    outputBox.style.display = 'block';
+    aiBtn.disabled = true; aiBtn.innerText = "Analyzing...";
+    outputBox.innerText = `Llama 3.3 is analyzing the ${statementName}...`;
+    outputBox.style.color = "#666"; outputBox.style.fontStyle = "italic";
+
+    fetch('/api/summarize-statement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            company_name: document.getElementById('cd-company-name').innerText,
+            form_type: document.getElementById('cd-form').innerText,
+            statement_name: statementName,
+            table_data: cleanData
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.error) throw new Error(data.error);
+        
+        // 2. SAVE TO CACHE
+        cachedStatementSummaries[statementName] = data.summary;
+        
+        outputBox.innerHTML = marked.parse(data.summary);
+        outputBox.style.color = "#333"; outputBox.style.fontStyle = "normal";
+    })
+    .catch(err => {
+        outputBox.innerText = `Analysis Failed: ${err.message}`;
+        outputBox.style.color = "#c62828"; outputBox.style.fontStyle = "normal";
+    })
+    .finally(() => { aiBtn.disabled = false; aiBtn.innerText = "Summarize Statement"; });
+}
+
+// 3. NEW FUNCTION: Summarize specific Narrative Sections
+function triggerNarrativeSummary() {
+    const outputBox = document.getElementById('narr-ai-output');
+    const aiBtn = document.getElementById('narr-ai-btn');
+    
+    // 1. CHECK CACHE FIRST
+    if (cachedNarrativeSummaries[activeNarrativeKey]) {
+        outputBox.style.display = 'block';
+        outputBox.innerHTML = marked.parse(cachedNarrativeSummaries[activeNarrativeKey]);
+        outputBox.style.color = "#333";
+        outputBox.style.fontStyle = "normal";
+        return;
+    }
+
+    const payloadText = currentNarrativeData[activeNarrativeKey];
+    outputBox.style.display = 'block';
+    aiBtn.disabled = true; aiBtn.innerText = "Reading text...";
+    outputBox.innerText = `Llama 3.3 is reading "${activeNarrativeKey}"...`;
+    outputBox.style.color = "#666"; outputBox.style.fontStyle = "italic";
+
+    fetch('/api/summarize-narrative', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            company_name: document.getElementById('cd-company-name').innerText,
+            form_type: document.getElementById('cd-form').innerText,
+            section_title: activeNarrativeKey,
+            text_payload: payloadText
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.error) throw new Error(data.error);
+        
+        // 2. SAVE TO CACHE
+        cachedNarrativeSummaries[activeNarrativeKey] = data.summary;
+        
+        outputBox.innerHTML = marked.parse(data.summary);
+        outputBox.style.color = "#333"; outputBox.style.fontStyle = "normal";
+    })
+    .catch(err => {
+        outputBox.innerText = `Analysis Failed: ${err.message}`;
+        outputBox.style.color = "#c62828"; outputBox.style.fontStyle = "normal";
+    })
+    .finally(() => { aiBtn.disabled = false; aiBtn.innerText = "Summarize Section"; });
+}
+
+function renderSelectedStatement() {
+    const selection = document.getElementById('statement-selector').value;
+    const data = currentFinancialData[selection];
+    
+    const thead = document.getElementById('financial-head');
+    const tbody = document.getElementById('financial-body');
+    thead.innerHTML = '';
+    tbody.innerHTML = '';
+
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td class="loading">Statement not available in this filing.</td></tr>';
+        return;
+    }
+
+    const allKeys = Object.keys(data[0]);
+    
+    // SMART FILTER: Only keep the "label" column and columns that start with a YYYY-MM-DD date pattern.
+    // This instantly drops all the internal XBRL metadata (concept, weight, balance, etc.)
+    const displayCols = ['label', ...allKeys.filter(k => /^\d{4}-\d{2}-\d{2}/.test(k))];
+
+    // Build Header
+    let headHtml = '<tr>';
+    displayCols.forEach(col => {
+        // Rename 'label' to 'Line Item' for a cleaner UI, keep date strings as they are
+        const title = col === 'label' ? 'Line Item' : col;
+        headHtml += `<th>${title}</th>`;
+    });
+    headHtml += '</tr>';
+    thead.innerHTML = headHtml;
+
+    // Build Rows
+    data.forEach(row => {
+        // Use the 'level' property to indent sub-items, even though we hid the column
+        const indent = row.level ? '&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(row.level) : '';
+        const isAbstract = row.abstract === true; 
+        
+        let rowHtml = `<tr style="${isAbstract ? 'font-weight: bold; background-color: #f9f9f9;' : ''}">`;
+        
+        displayCols.forEach(col => {
+            let val = row[col];
+            
+            if (col === 'label') {
+                // Override nowrap to allow text wrapping, and set boundaries so it doesn't get too squished or too wide
+                rowHtml += `<td style="white-space: normal; min-width: 300px; max-width: 450px; line-height: 1.4;">${indent}${val}</td>`;
+            } else {
+                // Formatting for the actual numerical data
+                if (val === "" || val === null) {
+                    // Render empty cells cleanly
+                    rowHtml += `<td class="num" style="color: #aaa; text-align: right;">-</td>`;
+                } else if (typeof val === 'number') {
+                    // Standard accounting format: commas for thousands, parentheses for negatives
+                    const formatted = val < 0 
+                        ? `(${Math.abs(val).toLocaleString('en-US')})` 
+                        : val.toLocaleString('en-US');
+                    
+                    // Highlight negative numbers slightly red for quick scanning
+                    const colorStyle = val < 0 ? 'color: #d32f2f;' : '';
+                    rowHtml += `<td class="num" style="text-align: right; ${colorStyle}">${formatted}</td>`;
+                } else {
+                    rowHtml += `<td class="num" style="text-align: right;">${val}</td>`;
+                }
+            }
+        });
+        rowHtml += '</tr>';
+        tbody.innerHTML += rowHtml;
+    });
+}
+
+
+// ==========================================
+// BROWSER HISTORY ROUTING
+// ==========================================
+window.addEventListener('popstate', (event) => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentAcc = urlParams.get('accession');
+    const currentDoc = urlParams.get('doc');
+    const currentMod = urlParams.get('module') || '13f'; // Default to 13f if missing
+    
+    // Strip active classes
+    document.getElementById('nav-13f').classList.remove('active');
+    if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
+    if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
+    if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+
+    if (currentAcc) {
+        document.getElementById('nav-13f').classList.add('active');
+        fetchHoldings(currentAcc, false); 
+    } else if (currentDoc) {
+        // Rebuild the Corporate Document from URL parameters
+        document.getElementById('nav-corp').classList.add('active');
+        openCorporateDocument(
+            urlParams.get('c'), urlParams.get('f'), urlParams.get('p'), 
+            urlParams.get('d'), currentDoc, urlParams.get('s'), false
+        );
+    } else {
+        switchModule(null, currentMod, false);
+    }
+});
+
+// ==========================================
+// INITIALIZE APP
+// ==========================================
+const initialUrlParams = new URLSearchParams(window.location.search);
+const initialAcc = initialUrlParams.get('accession');
+const initialDoc = initialUrlParams.get('doc');
+const initialMod = initialUrlParams.get('module') || '13f';
+
+if (initialAcc) {
+    document.getElementById('nav-13f').classList.add('active');
+    fetchHoldings(initialAcc, false);
+} else if (initialDoc) {
+    // Automatically load the corporate doc on a hard refresh
+    document.getElementById('nav-corp').classList.add('active');
+    openCorporateDocument(
+        initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('p'), 
+        initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false
+    );
+} else {
+    switchModule(null, initialMod, false);
+}
