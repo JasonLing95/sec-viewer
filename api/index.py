@@ -26,7 +26,8 @@ from supabase import create_client
 load_dotenv()
 
 app = FastAPI()
-app.mount("/public", StaticFiles(directory="public"), name="public")
+if not os.getenv("VERCEL"):
+    app.mount("/public", StaticFiles(directory="public"), name="public")
 
 supabase = create_client(
     os.getenv("SUPABASE_URL"),  # https://PROJECT-ID.supabase.co
