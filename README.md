@@ -4,56 +4,136 @@ Moniq Terminal is a high-performance, AI-powered web application for searching, 
 
 Powered by **FastAPI** and **Llama 3.3** (via Groq), it features real-time 13F-HR portfolio breakdowns, 10-K/10-Q financial extraction, 5-year trend tracking, and instant AI summarization of dense financial documents.
 
-## 🔗 Live Demo
+---
 
+# 🌐 Live Web App
+
+## Production Deployment
+
+**Live Application:**  
 https://sec-viewer-six.vercel.app/
+
+Access the deployed platform directly in your browser to:
+
+- Search SEC filings in real time
+- Analyze institutional 13F portfolios
+- View structured 10-K / 10-Q financials
+- Generate AI-powered filing summaries
+- Explore narrative sections interactively
+- Track insider trades and recent filings
 
 ---
 
 # ✨ Key Features
 
 ## 📊 13F-HR Portfolio Analysis
+
 Instantly parses institutional holdings and calculates:
 
 - Total AUM
 - Top 10 Concentration
 - Options Ratio (Leverage)
 - Quarter-over-Quarter Turnover
+- Historical portfolio positioning
+
+---
 
 ## 🏢 Corporate Financials (10-K & 10-Q)
-Extracts:
+
+Extracts and structures:
 
 - Income Statements
 - Balance Sheets
 - Cash Flow Statements
 
-Includes dynamically generated **5-Year SVG Sparkline Trends**.
+Includes dynamically generated:
+
+- 5-Year SVG Sparkline Trends
+- Financial metric comparisons
+- Historical trend visualization
+
+---
 
 ## 🤖 AI-Powered Insights
-Integrates **Groq's Llama-3.3-70b** model to generate:
 
-- Portfolio positioning summaries
-- Financial statement insights
+Integrates **Groq's Llama-3.3-70b** model for:
+
+- Portfolio strategy summaries
+- Financial statement interpretation
+- Risk signal extraction
 - Management narrative analysis
+- Filing simplification for rapid review
+
+---
 
 ## 📚 Narrative Explorer
-Breaks down massive 10-K/10-Q filings into an interactive chapter index, including sections like:
 
-- Part I
+Breaks down lengthy SEC filings into an interactive chapter structure, including:
+
+- Part I — Business
 - Risk Factors
-- Management Discussion & Analysis (MD&A)
+- MD&A (Management Discussion & Analysis)
 - Financial Statements
+- Notes to Financial Statements
 
-## ⚡ Real-Time Tracking
+---
+
+## ⚡ Real-Time Filing Feeds
+
 Auto-refreshing global feeds for:
 
-- 13F-HR filings
-- Corporate filings
-- Insider trades (Form 4)
-- Private offerings (Form D)
+- 13F-HR Filings
+- 10-K / 10-Q Corporate Filings
+- Insider Trades (Form 4)
+- Private Offerings (Form D)
+
+---
 
 ## 🔍 Lightning Fast Search
-Vectorized CIK and ticker substring searching using lightweight Apache Parquet lookup files.
+
+Vectorized ticker and CIK substring searching powered by:
+
+- Apache Parquet lookup files
+- In-memory filtering
+- Lightweight local indexing
+
+---
+
+# 🖥 Screens & Views
+
+The deployed web application includes:
+
+## Home Dashboard
+
+- Global filing feed
+- Search interface
+- Recent institutional filings
+- Trending corporate disclosures
+
+## Filing Viewer
+
+- Parsed SEC filing content
+- Structured section navigation
+- Interactive narrative explorer
+
+## Financial Statements View
+
+- Clean XBRL extraction
+- Structured financial tables
+- Trend sparklines
+
+## Portfolio Analytics View
+
+- Holdings breakdown
+- Sector concentration
+- Position-level analysis
+- Turnover metrics
+
+## AI Summary Panels
+
+- Instant LLM-generated summaries
+- Key insights extraction
+- Filing interpretation assistance
 
 ---
 
@@ -61,21 +141,28 @@ Vectorized CIK and ticker substring searching using lightweight Apache Parquet l
 
 ## Backend
 
-- **Python / FastAPI** — High-speed asynchronous API routing
-- **edgartools** — SEC EDGAR querying and XBRL extraction
-- **Pandas & lxml** — XML parsing and data manipulation
+- **Python / FastAPI** — High-speed asynchronous API framework
+- **edgartools** — SEC EDGAR querying & XBRL extraction
+- **Pandas** — Financial data processing
+- **lxml** — XML and SGML parsing
 - **Groq API** — Ultra-low latency LLM inference
-- **Supabase** — PostgreSQL integration for filings feeds
+- **Supabase** — PostgreSQL-backed filings feed storage
+
+---
 
 ## Frontend
 
 - **Vanilla HTML / CSS / JavaScript** — Zero-build-step architecture
-- **Marked.js** — Markdown rendering for AI summaries
-- **Browser History API** — Deep-linkable filing views and routing
+- **Marked.js** — Markdown rendering
+- **Browser History API** — Deep-linkable filing navigation
+
+---
 
 ## Infrastructure
 
-- **Vercel** — Python Serverless deployment via `vercel.json`
+- **Vercel** — Serverless deployment platform
+- **Python Serverless Functions** — Backend execution layer
+- **vercel.json** — Deployment configuration
 
 ---
 
@@ -130,24 +217,24 @@ SUPABASE_KEY=your_supabase_anon_key
 
 ## 5. Add Optional Lookup Files
 
-For lightning-fast ticker and company-name lookups, place these files in the root directory:
+For ultra-fast ticker and company-name lookups, add:
 
 ```plaintext
 ct.pq            # CUSIP → Ticker mapping
 cik-lookup.pq    # Company Name → CIK mapping
 ```
 
-> If these files are missing, the application gracefully falls back to native SEC naming.
+If these files are unavailable, the application falls back to native SEC identifiers.
 
 ---
 
-## 6. Run the Development Server
+## 6. Run the Local Development Server
 
 ```bash
 uvicorn api.index:app --reload --port 8000
 ```
 
-Open your browser and navigate to:
+Open:
 
 ```plaintext
 http://localhost:8000
@@ -163,9 +250,9 @@ http://localhost:8000
 │
 ├── public/
 │   ├── index.html         # Main UI layout & templates
-│   └── app.js             # Client-side routing, state management & API calls
+│   └── app.js             # Client-side routing & API calls
 │
-├── .env                   # Environment variables (not tracked in git)
+├── .env                   # Environment variables
 ├── requirements.txt       # Python dependencies
 └── vercel.json            # Vercel deployment configuration
 ```
@@ -174,13 +261,17 @@ http://localhost:8000
 
 # 📝 API Endpoints Overview
 
-## Search
+## Global Search
 
 ```http
 GET /api/search?q={query}
 ```
 
-Global company / ticker / CIK search.
+Search by:
+
+- Company name
+- Ticker
+- CIK
 
 ---
 
@@ -194,8 +285,8 @@ Parses 13F-HR XML filings and calculates:
 
 - QoQ deltas
 - Concentration metrics
-- Portfolio turnover
-- Leverage statistics
+- Turnover
+- Leverage exposure
 
 ---
 
@@ -205,7 +296,7 @@ Parses 13F-HR XML filings and calculates:
 GET /api/financials/{accession_no}
 ```
 
-Extracts raw XBRL filing data into structured JSON financial statements.
+Transforms raw XBRL filing data into structured JSON statements.
 
 ---
 
@@ -215,7 +306,7 @@ Extracts raw XBRL filing data into structured JSON financial statements.
 GET /api/narrative/{accession_no}
 ```
 
-Slices 10-K / 10-Q text into a readable chapter index.
+Slices long-form SEC filing text into structured chapters.
 
 ---
 
@@ -225,7 +316,7 @@ Slices 10-K / 10-Q text into a readable chapter index.
 POST /api/summarize-portfolio
 ```
 
-Sends dense 13F portfolio data to **Llama 3.3** for strategic analysis.
+Generates strategic portfolio summaries using Llama 3.3.
 
 ---
 
@@ -235,7 +326,7 @@ Sends dense 13F portfolio data to **Llama 3.3** for strategic analysis.
 POST /api/summarize-statement
 ```
 
-Generates AI-driven financial insights from selected XBRL statement data.
+Creates AI-generated insights from XBRL financial tables.
 
 ---
 
@@ -245,7 +336,7 @@ Generates AI-driven financial insights from selected XBRL statement data.
 POST /api/summarize-narrative
 ```
 
-Summarizes qualitative SEC filing text using LLM inference.
+Summarizes qualitative filing sections and disclosures.
 
 ---
 
@@ -255,20 +346,58 @@ Summarizes qualitative SEC filing text using LLM inference.
 POST /api/metrics/holdtime
 ```
 
-Calculates the estimated average hold time for top portfolio positions using historical SEC filings.
+Calculates estimated average hold time for top positions using historical SEC filings.
+
+---
+
+# ⚙ Deployment
+
+## Vercel Deployment
+
+The application is optimized for deployment on Vercel using Python Serverless Functions.
+
+Example deployment flow:
+
+```bash
+vercel deploy
+```
+
+Configuration is handled via:
+
+```plaintext
+vercel.json
+```
 
 ---
 
 # 📌 Highlights
 
-- Zero-build frontend architecture
-- Real-time SEC parsing
-- AI-powered financial intelligence
+- AI-powered SEC filing analysis
+- Real-time EDGAR parsing
 - Structured XBRL extraction
-- Institutional portfolio analytics
+- Institutional portfolio intelligence
+- Zero-build frontend architecture
+- FastAPI serverless backend
 - Deep-linkable filing navigation
-- Ultra-fast search with Apache Parquet
-- Serverless deployment-ready
+- Interactive financial trend tracking
+- Groq LLM integration
+- Lightning-fast Parquet search indexing
+
+---
+
+# 🔐 Environment Variables
+
+| Variable | Description |
+|---|---|
+| `GROQ_API_KEY` | API key for Groq LLM inference |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_KEY` | Supabase anon/public key |
+
+---
+
+# 📄 License
+
+MIT License
 
 ---
 
@@ -278,6 +407,21 @@ Calculates the estimated average hold time for top portfolio positions using his
 - FastAPI
 - Groq
 - Supabase
-- edgartools
 - Pandas
 - Vercel
+- edgartools
+- lxml
+
+---
+
+# 🔗 Quick Access
+
+## Live Web App
+
+https://sec-viewer-six.vercel.app/
+
+## Local Development
+
+```bash
+uvicorn api.index:app --reload --port 8000
+```
