@@ -15,6 +15,7 @@ from edgar import (
     Company,
 )
 from edgar.company_reports import TenK, TenQ
+from edgar.ttm import detect_splits
 from lxml import etree
 
 from groq import Groq
@@ -42,37 +43,70 @@ cik_mapping_df = None
 cik_pq_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cik-lookup.pq"
 )
+ct_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "company_tickers.parquet",
+)
 
 try:
+    # Load the CUSIP-to-Ticker mapping (ONLY for 13F parsing)
     if os.path.exists(pq_path):
-        # Load the parquet file
-        df = pd.read_parquet(pq_path)
+        holdings_df = pd.read_parquet(pq_path)
+        # Assuming the parquet has 'cusip' and 'ticker' columns
+        if "cusip" in holdings_df.columns and "ticker" in holdings_df.columns:
+            cusip_to_ticker = (
+                holdings_df.set_index("cusip")["ticker"].dropna().to_dict()
+            )
+            print(f"Loaded {len(cusip_to_ticker)} CUSIP mappings.")
 
-        # IMPORTANT: Change 'CUSIP' and 'Ticker' to the exact column names in your .pq file!
-        cusip_col = "Cusip"
-        ticker_col = "Ticker"
-
-        # Convert to a dictionary for lightning-fast lookups: { "037833100": "AAPL" }
-        cusip_to_ticker = dict(zip(df[cusip_col], df[ticker_col]))
-        print(f"Successfully loaded {len(cusip_to_ticker)} CUSIP mappings.")
-    else:
-        print(
-            "Warning: Parquet mapping file not found. Tickers will fallback to SEC names."
-        )
-except Exception as e:
-    print(f"Failed to load Parquet mapping: {e}")
-
-try:
+    # Load the Master Company Index (ONLY for Search)
     if os.path.exists(cik_pq_path):
         cik_mapping_df = pd.read_parquet(cik_pq_path)
-        # IMPORTANT: Change 'Company Name' and 'CIK' to your exact column names!
-        # We create a lowercase column once on startup to make searches lightning fast
-        cik_mapping_df["search_name"] = (
-            cik_mapping_df["Company Name"].astype(str).str.lower()
+
+        # Find the exact name of the CIK column
+        master_cik_col = "CIK" if "CIK" in cik_mapping_df.columns else "cik"
+
+        # Normalize the Master CIK column to match perfectly
+        cik_mapping_df["clean_cik"] = (
+            cik_mapping_df[master_cik_col]
+            .astype(str)
+            .str.split(".")
+            .str[0]
+            .str.zfill(10)
         )
-        print(f"Successfully loaded {len(cik_mapping_df)} CIK search records.")
+
+        # 3. Load Ticker Mapping (company_tickers.parquet) and MERGE
+        if os.path.exists(ct_path):
+            ticker_df = pd.read_parquet(ct_path)
+            if "cik" in ticker_df.columns:
+                # Normalize the Ticker CIK column
+                ticker_df["clean_cik"] = (
+                    ticker_df["cik"].astype(str).str.split(".").str[0].str.zfill(10)
+                )
+
+                # Deduplicate the tickers to prevent rows from multiplying
+                unique_tickers = ticker_df.drop_duplicates(subset=["clean_cik"])
+
+                # Bring over 'ticker' and 'exchange' (avoid duplicate name columns)
+                merge_cols = ["clean_cik", "ticker"]
+                if "exchange" in unique_tickers.columns:
+                    merge_cols.append("exchange")
+
+                # Perform the Left Join
+                cik_mapping_df = pd.merge(
+                    cik_mapping_df,
+                    unique_tickers[merge_cols],
+                    on="clean_cik",
+                    how="left",
+                )
+
+        print(
+            f"Loaded Master Index: {len(cik_mapping_df)} companies (Tickers Merged!)."
+        )
+    else:
+        cik_mapping_df = None
 except Exception as e:
-    print(f"Failed to load CIK mapping: {e}")
+    print(f"Error loading Parquet files: {e}")
 
 groq_client = Groq()
 
@@ -362,27 +396,92 @@ def gather_holdings_using_lxml(tables, ns, cik, accession_number) -> list[list]:
 
 
 @app.get("/api/search")
-def search_company(q: str):
-    """Searches the Parquet dataframe for matching company names."""
-    if cik_mapping_df is None:
-        return JSONResponse(
-            status_code=500, content={"error": "Search database not loaded."}
-        )
+def search_database(q: str):
+    try:
+        if not q or len(q) < 2 or cik_mapping_df is None:
+            return JSONResponse(content={"results": []})
 
-    query = q.lower().strip()
-    if len(query) < 2:
-        return JSONResponse(content={"results": []})
+        q_lower = q.lower()
 
-    # Fast vectorized substring search. Limit to top 8 results for a clean UI.
-    matches = cik_mapping_df[
-        cik_mapping_df["search_name"].str.contains(query, na=False)
-    ].head(8)
+        # Detect column names safely
+        cols = {str(c).lower(): c for c in cik_mapping_df.columns}
+        col_cik = cols.get("cik") or cols.get("clean_cik")
+        col_name = cols.get("company name") or cols.get("title") or cols.get("name")
+        col_ticker = cols.get("ticker")
 
-    results = []
-    for _, row in matches.iterrows():
-        results.append({"name": row["Company Name"], "cik": str(row["CIK"])})
+        # Filter by CIK (if numeric) or Name/Ticker
+        mask = pd.Series(False, index=cik_mapping_df.index)
 
-    return JSONResponse(content={"results": results})
+        if q.isdigit() and col_cik:
+            # NUMERIC SEARCH: Search CIKs
+            mask = (
+                cik_mapping_df[col_cik]
+                .astype(str)
+                .str.lstrip("0")
+                .str.contains(q.lstrip("0"), na=False)
+            )
+            matches = cik_mapping_df[mask].head(10)
+        else:
+            # TEXT SEARCH: Prioritize Exact Tickers over Fuzzy Names
+            exact_ticker_mask = pd.Series(False, index=cik_mapping_df.index)
+            fuzzy_mask = pd.Series(False, index=cik_mapping_df.index)
+
+            # 1. Look for Exact Ticker Matches (Highest Priority)
+            if col_ticker:
+                exact_ticker_mask = (
+                    cik_mapping_df[col_ticker].astype(str).str.lower() == q_lower
+                )
+
+            # 2. Look for Fuzzy Name & Partial Ticker Matches
+            if col_name:
+                fuzzy_mask |= (
+                    cik_mapping_df[col_name]
+                    .astype(str)
+                    .str.lower()
+                    .str.contains(q_lower, na=False)
+                )
+            if col_ticker:
+                fuzzy_mask |= (
+                    cik_mapping_df[col_ticker]
+                    .astype(str)
+                    .str.lower()
+                    .str.contains(q_lower, na=False)
+                )
+
+            # 3. Remove exact matches from the fuzzy list to prevent duplicates
+            fuzzy_mask = fuzzy_mask & ~exact_ticker_mask
+
+            # 4. Stack the results: Exact Tickers FIRST, then Fuzzy Matches
+            exact_matches = cik_mapping_df[exact_ticker_mask]
+            fuzzy_matches = cik_mapping_df[fuzzy_mask]
+
+            matches = pd.concat([exact_matches, fuzzy_matches]).head(10)
+
+        results = []
+        for _, row in matches.iterrows():
+            # Safely extract and format values
+            raw_name = str(row.get(col_name, "Unknown")) if col_name else "Unknown"
+            raw_ticker = str(row.get(col_ticker, "")) if col_ticker else ""
+
+            raw_cik = str(row.get(col_cik, "")) if col_cik else ""
+            clean_cik = (
+                raw_cik.split(".")[0].zfill(10)
+                if raw_cik and raw_cik != "nan"
+                else "N/A"
+            )
+
+            results.append(
+                {
+                    "name": raw_name,
+                    "cik": clean_cik,
+                    "ticker": raw_ticker if raw_ticker != "nan" else "",
+                }
+            )
+
+        return JSONResponse(content={"results": results})
+    except Exception as e:
+        print(f"SEARCH ERROR: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/api/company/{cik}/overview")
@@ -748,9 +847,9 @@ def get_financial_statements(accession_no: str):
             except:
                 return None
 
-        inc_df = get_clean_df(statements.income_statement())
-        bal_df = get_clean_df(statements.balance_sheet())
-        cash_df = get_clean_df(statements.cashflow_statement())
+        inc_df = get_clean_df(statements.income_statement(view="detailed"))
+        bal_df = get_clean_df(statements.balance_sheet(view="detailed"))
+        cash_df = get_clean_df(statements.cashflow_statement(view="detailed"))
 
         # 2. Extract KPIs safely using Pandas
         kpis = {
@@ -1168,7 +1267,7 @@ def get_financial_trends(accession_no: str, stmt_type: str):
 
         comp = Company(filing.cik)
 
-        # Use the multi-period stitching from edgartools
+        # 1. Fetch the 5-Year Stitched Statements
         if stmt_type == "income":
             stmt = comp.income_statement(periods=5)
         elif stmt_type == "balance":
@@ -1185,12 +1284,41 @@ def get_financial_trends(accession_no: str, stmt_type: str):
                 status_code=404, content={"error": "Trend data not available."}
             )
 
-        # Convert to Pandas safely
+        # 2. Detect Historical Stock Splits (Wrap in try/except to prevent SEC API timeout crashes)
+        splits_info = []
+        try:
+            facts = comp.get_facts()
+            if facts:
+                splits = detect_splits(facts.get_all_facts())
+                if splits:
+                    for s in splits:
+                        # Extract the ratio (e.g., 4.0 for a 4-for-1 split) and the date
+                        ratio = float(s.get("ratio", 1.0))
+                        split_str = (
+                            f"{int(ratio)}-for-1"
+                            if ratio >= 1
+                            else f"1-for-{int(1/ratio)} Reverse"
+                        )
+                        splits_info.append(
+                            {
+                                "date": str(s.get("date", "Unknown")),
+                                "ratio_str": split_str,
+                            }
+                        )
+        except Exception as e:
+            print(f"Split detection failed: {e}")
+
+        # 3. Convert to Pandas safely
         df = stmt.to_dataframe().reset_index()
         df = df.replace([np.inf, -np.inf], "")
         df = df.fillna("")
 
-        return JSONResponse(content={"trend_data": df.to_dict(orient="records")})
+        return JSONResponse(
+            content={
+                "trend_data": df.to_dict(orient="records"),
+                "splits": splits_info,  # NEW: Send split metadata to the UI
+            }
+        )
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

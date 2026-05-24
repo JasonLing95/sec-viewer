@@ -17,6 +17,7 @@ let cachedNarrativeSummaries = {};
 // --- TREND STATE ---
 let isTrendMode = false;
 let trendCache = { income: null, balance: null, cash: null };
+let splitsCache = [];
 
 // ==========================================
 // GLOBAL SEARCH LOGIC
@@ -1036,7 +1037,9 @@ let currentFinancialData = { income: [], balance: [], cash: [] };
 
 function openCorporateDocument(company, form, period, date, accession_no, secUrl, updateUrl = true) {
     isTrendMode = false;
+    isSegmentMode = false;
     trendCache = { income: null, balance: null, cash: null };
+    splitsCache = [];
     if (document.getElementById('trend-btn')) {
         document.getElementById('trend-btn').innerText = "Show 5-Year Trend";
         document.getElementById('trend-btn').style.background = "#1976d2";
@@ -1317,6 +1320,24 @@ function triggerNarrativeSummary() {
     .finally(() => { aiBtn.disabled = false; aiBtn.innerText = "Summarize Section"; });
 }
 
+// --- SEGMENT STATE ---
+let isSegmentMode = false;
+
+function toggleSegmentView() {
+    isSegmentMode = !isSegmentMode;
+    const btn = document.getElementById('segment-btn');
+    
+    if (isSegmentMode) {
+        btn.innerText = "Hide Segments";
+        btn.style.background = "#7b1fa2"; // Darker purple when active
+    } else {
+        btn.innerText = "Show Segments";
+        btn.style.background = "#9c27b0"; // Default purple
+    }
+    
+    renderSelectedStatement(); 
+}
+
 function toggleTrendView() {
     isTrendMode = !isTrendMode;
     const btn = document.getElementById('trend-btn');
@@ -1338,12 +1359,70 @@ function renderSelectedStatement() {
     const tbody = document.getElementById('financial-body');
     const loading = document.getElementById('financial-loading');
 
+    // Grab all three action buttons
+    const aiBtn = document.getElementById('fin-ai-btn');
+    const segmentBtn = document.getElementById('segment-btn');
+    const trendBtn = document.getElementById('trend-btn');
+
     // Hide AI box when switching views
     if(document.getElementById('fin-ai-output')) document.getElementById('fin-ai-output').style.display = 'none';
+
+    // NEW HELPER: Dynamically manage ALL button states (Loading, Empty, and Feature Availability)
+    const updateButtonStates = (dataArray, isLoading) => {
+        
+        // 1. Manage AI Summary Button
+        if (isLoading || !dataArray || dataArray.length === 0) {
+            aiBtn.disabled = true;
+            aiBtn.style.opacity = '0.5';
+            aiBtn.style.cursor = 'not-allowed';
+            aiBtn.title = isLoading ? "Loading data..." : "Statement data is not available.";
+        } else {
+            aiBtn.disabled = false;
+            aiBtn.style.opacity = '1';
+            aiBtn.style.cursor = 'pointer';
+            aiBtn.title = "Summarize this statement with AI";
+        }
+
+        // 2. Manage 'Show Segments' Button
+        // Scan the data to see if ANY row is actually a dimensional segment
+        const hasSegments = dataArray && dataArray.some(row => row.dimension === true || row.dimension === "True" || row.dimension === "true");
+        
+        if (isLoading || !hasSegments) {
+            segmentBtn.disabled = true;
+            segmentBtn.style.opacity = '0.5';
+            segmentBtn.style.cursor = 'not-allowed';
+            segmentBtn.title = isLoading ? "Loading data..." : "No dimensional segments available in this statement.";
+        } else {
+            segmentBtn.disabled = false;
+            segmentBtn.style.opacity = '1';
+            segmentBtn.style.cursor = 'pointer';
+            segmentBtn.title = "Toggle dimensional breakdowns";
+        }
+
+        // 3. Manage '5-Year Trend' Button
+        if (isLoading) {
+            trendBtn.disabled = true;
+            trendBtn.style.opacity = '0.5';
+            trendBtn.style.cursor = 'not-allowed';
+            trendBtn.title = "Stitching history...";
+        } else {
+            trendBtn.disabled = false;
+            trendBtn.style.opacity = '1';
+            trendBtn.style.cursor = 'pointer';
+            trendBtn.title = isTrendMode ? "Return to single filing view" : "Fetch 5-year historical trend";
+        }
+    };
 
     if (isTrendMode) {
         if (trendCache[selection]) {
             buildFinancialTable(trendCache[selection], thead, tbody);
+            updateButtonStates(trendCache[selection], false); 
+            
+            // SHOW BANNER IF SPLITS EXIST IN CACHE
+            if (splitsCache.length > 0) {
+                document.getElementById('split-banner').style.display = 'flex';
+                document.getElementById('split-text').innerText = splitsCache.map(s => `a ${s.ratio_str} split on ${s.date}`).join(' and ');
+            }
         } else {
             // Fetch 5-Year Data dynamically
             thead.innerHTML = '';
@@ -1351,6 +1430,7 @@ function renderSelectedStatement() {
             loading.style.display = 'block';
             loading.innerText = `Stitching 5 years of ${selection} history...`;
             document.getElementById('financial-table').style.display = 'none';
+            updateButtonStates(null, true); 
             
             const accNo = document.getElementById('cd-acc').innerText;
             
@@ -1358,19 +1438,34 @@ function renderSelectedStatement() {
                 .then(res => res.json())
                 .then(data => {
                     if (data.error) throw new Error(data.error);
+                    
+                    // Cache both the table data AND the split metadata
                     trendCache[selection] = data.trend_data;
+                    if (data.splits && data.splits.length > 0) splitsCache = data.splits;
+                    
                     loading.style.display = 'none';
                     document.getElementById('financial-table').style.display = 'table';
                     buildFinancialTable(data.trend_data, thead, tbody);
+                    updateButtonStates(data.trend_data, false);
+                    
+                    // SHOW BANNER IF NEW SPLITS FETCHED
+                    if (splitsCache.length > 0) {
+                        document.getElementById('split-banner').style.display = 'flex';
+                        document.getElementById('split-text').innerText = splitsCache.map(s => `a ${s.ratio_str} split on ${s.date}`).join(' and ');
+                    }
                 })
                 .catch(err => {
                     loading.innerText = `Trend Error: ${err.message}`;
                     loading.style.color = "red";
+                    updateButtonStates(null, false); 
                 });
         }
     } else {
         // Standard Single Filing View
-        buildFinancialTable(currentFinancialData[selection], thead, tbody);
+        document.getElementById('split-banner').style.display = 'none'; // ALWAYS HIDE IN SINGLE VIEW
+        const currentData = currentFinancialData[selection] || [];
+        buildFinancialTable(currentData, thead, tbody);
+        updateButtonStates(currentData, false); 
     }
 }
 
@@ -1384,8 +1479,14 @@ function buildFinancialTable(data, thead, tbody) {
         return;
     }
 
+    // 1. FILTER DATA BASED ON SEGMENT MODE
+    let displayData = data;
+    if (!isSegmentMode) {
+        // Hide all rows where XBRL 'dimension' is True
+        displayData = data.filter(row => row.dimension !== true && row.dimension !== "True" && row.dimension !== "true");
+    }
+
     const allKeys = Object.keys(data[0]);
-    // SMART FILTER: Matches YYYY-MM-DD OR "FY YYYY" / "CY YYYY"
     const displayCols = ['label', ...allKeys.filter(k => /^(FY|CY)?\s?\d{4}/.test(k))];
 
     let headHtml = '<tr>';
@@ -1394,73 +1495,72 @@ function buildFinancialTable(data, thead, tbody) {
         headHtml += `<th>${title}</th>`;
     });
     
-    // NEW: Add the Sparkline Header if we are in 5-Year Trend Mode
-    if (isTrendMode) {
-        headHtml += `<th style="text-align: center;">5-Yr Trend</th>`;
-    }
-    
+    if (isTrendMode) headHtml += `<th style="text-align: center;">5-Yr Trend</th>`;
     headHtml += '</tr>';
     thead.innerHTML = headHtml;
 
-    data.forEach(row => {
+    displayData.forEach(row => {
         const level = row.level !== undefined ? row.level : (row.depth || 0);
         const indent = level > 0 ? '&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(level) : '';
         const isAbstract = row.abstract === true || row.is_abstract === true; 
         
-        let rowHtml = `<tr style="${isAbstract ? 'font-weight: bold; background-color: #f9f9f9;' : ''}">`;
+        // Check if this row is a dimensional segment breakdown
+        const isDimension = row.dimension === true || row.dimension === "True" || row.dimension === "true";
         
-        let rowValues = []; // NEW: Array to collect numbers for the Sparkline
+        let rowHtml = `<tr style="${isAbstract ? 'font-weight: bold; background-color: #f9f9f9;' : ''}">`;
+        let rowValues = []; 
 
         displayCols.forEach(col => {
             let val = row[col];
             
-            // Collect numeric values (Skip the label column and abstract headers)
-            if (col !== 'label' && !isAbstract) {
+            if (col !== 'label' && !isAbstract && !isDimension) {
                 if (typeof val === 'number') rowValues.push(val);
                 else rowValues.push(null);
             }
 
             if (col === 'label') {
-                rowHtml += `<td style="white-space: normal; min-width: 300px; max-width: 450px; line-height: 1.4;">${indent}${val}</td>`;
+                if (isDimension) {
+                    // Format dimensional rows as indented, purple sub-items
+                    const segmentName = row.dimension_member_label || row.dimension_member || "Segment Breakdown";
+                    val = `↳ ${segmentName}`;
+                    rowHtml += `<td style="white-space: normal; min-width: 300px; max-width: 450px; line-height: 1.4; color: #9c27b0; padding-left: 40px; font-size: 11px;">${indent}${val}</td>`;
+                } else {
+                    rowHtml += `<td style="white-space: normal; min-width: 300px; max-width: 450px; line-height: 1.4;">${indent}${val}</td>`;
+                }
             } else {
                 if (val === "" || val === null || val === undefined) {
                     rowHtml += `<td class="num" style="color: #aaa; text-align: right;">-</td>`;
                 } else if (typeof val === 'number') {
                     const formatted = val < 0 ? `(${Math.abs(val).toLocaleString('en-US')})` : val.toLocaleString('en-US');
                     const colorStyle = val < 0 ? 'color: #d32f2f;' : '';
-                    rowHtml += `<td class="num" style="text-align: right; ${colorStyle}">${formatted}</td>`;
+                    
+                    // Slightly fade the numbers for segment rows so the main totals stand out
+                    const opacityStyle = isDimension ? 'opacity: 0.8;' : '';
+                    rowHtml += `<td class="num" style="text-align: right; ${colorStyle} ${opacityStyle}">${formatted}</td>`;
                 } else {
                     rowHtml += `<td class="num" style="text-align: right;">${val}</td>`;
                 }
             }
         });
 
-        // ==========================================
-        // NEW: SVG SPARKLINE GENERATOR
-        // ==========================================
+        // Add the Sparkline
         if (isTrendMode) {
-            if (isAbstract) {
-                rowHtml += `<td></td>`; // Leave cell blank for category headers
+            if (isAbstract || isDimension) {
+                rowHtml += `<td></td>`; 
             } else {
-                // Remove nulls and REVERSE the array so the chart reads Left (Oldest) to Right (Newest)
                 let validVals = rowValues.filter(v => v !== null).reverse();
-                
                 if (validVals.length > 1) {
                     const min = Math.min(...validVals);
                     const max = Math.max(...validVals);
-                    const range = max - min === 0 ? 1 : max - min; // Prevent division by zero
+                    const range = max - min === 0 ? 1 : max - min; 
+                    const width = 80; const height = 24;
                     
-                    const width = 80;
-                    const height = 24;
-                    
-                    // Map the numbers to X and Y coordinates on the SVG canvas
                     let points = validVals.map((val, i) => {
                         const x = (i / (validVals.length - 1)) * width;
-                        const y = height - (((val - min) / range) * height); // SVG Y-axis is inverted
+                        const y = height - (((val - min) / range) * height);
                         return `${x},${y}`;
                     }).join(' ');
 
-                    // Color code the trend (Green = Up, Red = Down, Blue = Flat)
                     const first = validVals[0];
                     const last = validVals[validVals.length - 1];
                     let strokeColor = "#0070f3"; 
@@ -1473,13 +1573,10 @@ function buildFinancialTable(data, thead, tbody) {
                         </svg>
                     </td>`;
                 } else {
-                    // Not enough data points to draw a line
                     rowHtml += `<td style="color: #aaa; text-align: center; font-size: 10px;">-</td>`;
                 }
             }
         }
-        // ==========================================
-
         rowHtml += '</tr>';
         tbody.innerHTML += rowHtml;
     });

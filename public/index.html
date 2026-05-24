@@ -514,11 +514,14 @@
                 <thead>
                     <tr>
                         <th onclick="sortOptions('ticker')">Ticker ↕</th>
+                        <th onclick="sortOptions('issuer')">Issuer ↕</th> 
                         <th onclick="sortOptions('cusip')">CUSIP ↕</th>
-                        <th onclick="sortOptions('class')">Class ↕</th> <th onclick="sortOptions('weight_pct')">Port % ↕</th>
+                        <th onclick="sortOptions('class')">Class ↕</th> 
+                        <th onclick="sortOptions('weight_pct')">Port % ↕</th>
                         <th onclick="sortOptions('share_type')">Type ↕</th>
                         <th onclick="sortOptions('shares')" style="text-align: right;">Shares ↕</th>
                         <th onclick="sortOptions('value_usd')" style="text-align: right;">Value ($k) ↕</th>
+                        <th onclick="sortOptions('change_pct')" style="text-align: right;">QoQ Delta ↕</th>
                         <th onclick="sortOptions('discretion')">Discr ↕</th>
                         <th onclick="sortOptions('put_call')">Option ↕</th>
                     </tr>
@@ -570,6 +573,12 @@
                     <div id="kpi-margin" style="font-size: 18px; font-weight: bold; color: #0070f3;">-</div>
                 </div>
             </div>
+            <div id="split-banner" style="display: none; background: #e8f4fd; color: #0277bd; padding: 12px 15px; border-radius: 6px; border-left: 4px solid #0277bd; margin-bottom: 15px; font-size: 13px; align-items: center; gap: 10px;">
+                <strong style="font-size: 16px;">ⓘ</strong>
+                <div>
+                    <strong>Data Normalized:</strong> Historical per-share metrics (EPS) in this 5-year trend have been automatically adjusted to account for <span id="split-text" style="font-weight: bold;"></span>.
+                </div>
+            </div>
             <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 15px;">
                 <select id="statement-selector" onchange="renderSelectedStatement()" style="padding: 6px; font-weight: bold; border-radius: 4px;">
                     <option value="income">Income Statement</option>
@@ -577,6 +586,8 @@
                     <option value="cash">Cash Flow</option>
                 </select>
                 <button id="fin-ai-btn" class="btn-primary" style="background: #2e7d32; font-size: 12px;" onclick="triggerStatementSummary()">Summarize Statement</button>
+                
+                <button id="segment-btn" class="btn-primary" style="background: #9c27b0; font-size: 12px;" onclick="toggleSegmentView()">Show Segments</button>
                 
                 <button id="trend-btn" class="btn-primary" style="background: #1976d2; font-size: 12px; margin-left: auto;" onclick="toggleTrendView()">Show 5-Year Trend</button>
             </div>
