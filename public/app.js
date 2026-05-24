@@ -716,6 +716,8 @@ function showInsiderView(fetchData = true, updateUrl = true, resetPage = false) 
     if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
     if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
     if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+
+    document.getElementById('insider-doc-view').style.display = 'none';
     
     document.getElementById('insider-view').style.display = 'block';
     document.getElementById('back-btn').style.display = 'none';
@@ -837,8 +839,19 @@ function loadInsiderFilings(page) {
                     <td class="mono">${f.cik}</td>
                     <td>${f.report_period}</td> 
                     <td>${f.date}</td>
-                    <td class="mono">${f.accession_no}</td>
-                    <td><a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none;">View SEC ↗</a></td>
+                    <td class="mono">
+                        <a href="javascript:void(0);" onclick="openInsiderDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                           style="color: #0070f3; text-decoration: underline; font-weight: bold;" title="View Details">
+                            ${f.accession_no}
+                        </a>
+                    </td>
+                    <td style="display: flex; gap: 8px;">
+                        <button onclick="openInsiderDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                                class="btn-primary" style="padding: 4px 8px; font-size: 11px;">
+                            View Details
+                        </button>
+                        <a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;">View SEC ↗</a>
+                    </td>
                 </tr>`;
             });
             
@@ -1140,6 +1153,108 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
         .catch(err => {
             document.getElementById('financial-loading').innerText = `XBRL Error: ${err.message}`;
             document.getElementById('financial-loading').style.color = "red";
+        });
+}
+
+function openInsiderDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', 'insider');
+        url.searchParams.set('doc', accession_no);
+        url.searchParams.set('c', company);
+        url.searchParams.set('f', form);
+        url.searchParams.set('d', date);
+        url.searchParams.set('s', secUrl);
+        window.history.pushState({ doc: accession_no }, '', url);
+    }
+
+    document.getElementById('back-btn').onclick = () => switchModule(null, 'insider');
+
+    // Hide all other views
+    document.getElementById('filings-view').style.display = 'none';
+    if(document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if(document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
+    if(document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if(document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    if(document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if(document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+
+    // Show Insider view
+    document.getElementById('insider-doc-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "Insider Transaction Detail";
+
+    // Basic headers
+    document.getElementById('id-company-name').innerText = company;
+    document.getElementById('id-form').innerText = form;
+    document.getElementById('id-date').innerText = date;
+    document.getElementById('id-acc').innerText = accession_no;
+    document.getElementById('id-raw-link').href = secUrl;
+
+    const tbody = document.getElementById('insider-table-body');
+    const thead = document.getElementById('insider-table-head');
+    tbody.innerHTML = '<tr><td class="loading">Extracting Form 4 Details...</td></tr>';
+
+    fetch(`/api/insider/${accession_no}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            const s = data.summary;
+            document.getElementById('id-insider-name').innerText = s.insider_name;
+            document.getElementById('id-position').innerText = s.position;
+            
+            // Format Activity & Color
+            const actEl = document.getElementById('id-activity');
+            actEl.innerText = s.primary_activity;
+            actEl.style.color = s.net_change > 0 ? '#2e7d32' : (s.net_change < 0 ? '#c62828' : '#111');
+
+            // Format 10b5-1 Plan detection
+            const planEl = document.getElementById('id-10b51');
+            if (s.has_10b5_1_plan) {
+                planEl.innerText = "Scheduled Trade (10b5-1 Plan)";
+                planEl.style.color = "#ff9800";
+            } else {
+                planEl.innerText = "Discretionary Trade";
+                planEl.style.color = "#0070f3";
+            }
+
+            // Format Financials
+            document.getElementById('id-net-value').innerText = s.net_value !== 0 ? `$${Math.abs(s.net_value).toLocaleString('en-US')}` : '-';
+            document.getElementById('id-remaining').innerText = s.remaining_shares > 0 ? s.remaining_shares.toLocaleString('en-US') : '-';
+
+            // Build Transaction Table dynamically
+            if (data.transactions.length === 0) {
+                tbody.innerHTML = '<tr><td style="text-align:center;">No parsed transaction data available.</td></tr>';
+                return;
+            }
+
+            const keys = Object.keys(data.transactions[0]);
+            thead.innerHTML = `<tr>${keys.map(k => `<th>${k}</th>`).join('')}</tr>`;
+            
+            tbody.innerHTML = '';
+            data.transactions.forEach(row => {
+                let tr = '<tr>';
+                keys.forEach(k => {
+                    let val = row[k];
+                    // Clean up formatting
+                    if (typeof val === 'number') {
+                        // Assume it's currency if the key has "price" or "value"
+                        if (k.toLowerCase().includes('price') || k.toLowerCase().includes('value')) {
+                            val = `$${val.toLocaleString('en-US', {minimumFractionDigits: 2})}`;
+                        } else {
+                            val = val.toLocaleString('en-US'); // Regular share count
+                        }
+                    }
+                    tr += `<td ${typeof row[k] === 'number' ? 'class="num"' : ''}>${val}</td>`;
+                });
+                tr += '</tr>';
+                tbody.innerHTML += tr;
+            });
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
         });
 }
 

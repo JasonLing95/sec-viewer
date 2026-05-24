@@ -45,7 +45,7 @@ cik_pq_path = os.path.join(
 )
 ct_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "company_tickers.parquet",
+    "company_tickers.pq",
 )
 
 try:
@@ -1321,6 +1321,98 @@ def get_financial_trends(accession_no: str, stmt_type: str):
         )
 
     except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+def to_serializable(obj):
+    """Recursively convert numpy/pandas types to Python types."""
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    if isinstance(obj, (np.floating, np.float64, np.float32)):
+        return None if np.isnan(obj) else float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    if isinstance(obj, pd.Series):
+        return obj.to_dict()  # or obj.tolist() depending on need
+    if isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient="records")
+    if isinstance(obj, dict):
+        return {k: to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [to_serializable(i) for i in obj]
+    # Fallback for other custom objects (try vars() safely)
+    if hasattr(obj, "__dict__"):
+        return to_serializable(vars(obj))
+    return obj
+
+
+@app.get("/api/insider/{accession_no}")
+def get_insider_document(accession_no: str):
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return JSONResponse(status_code=404, content={"error": "Filing not found."})
+
+        form_obj = filing.obj()
+        if not form_obj:
+            return JSONResponse(
+                status_code=404, content={"error": "Could not parse insider filing."}
+            )
+
+        # Extract summary as a dictionary (defensive)
+        summary_raw = form_obj.get_ownership_summary()
+        if isinstance(summary_raw, dict):
+            summary_data = {
+                "insider_name": summary_raw.get("insider_name", "Unknown"),
+                "position": summary_raw.get("position", "Unknown"),
+                "primary_activity": summary_raw.get(
+                    "primary_activity", "Derivative Activity"
+                ),
+                "net_change": summary_raw.get("net_change", 0),
+                "net_value": summary_raw.get("net_value", 0.0),
+                "remaining_shares": summary_raw.get("remaining_shares", "N/A"),
+                "has_10b5_1_plan": summary_raw.get("has_10b5_1_plan", False),
+            }
+        else:
+            # Assume it's an object with attributes
+            summary_data = {
+                "insider_name": getattr(summary_raw, "insider_name", "Unknown"),
+                "position": getattr(summary_raw, "position", "Unknown"),
+                "primary_activity": getattr(
+                    summary_raw, "primary_activity", "Derivative Activity"
+                ),
+                "net_change": getattr(summary_raw, "net_change", 0),
+                "net_value": getattr(summary_raw, "net_value", 0.0),
+                "remaining_shares": getattr(summary_raw, "remaining_shares", "N/A"),
+                "has_10b5_1_plan": getattr(summary_raw, "has_10b5_1_plan", False),
+            }
+
+        # Convert the entire response using the recursive function
+        response_data = {
+            "company": filing.company,
+            "cik": filing.cik,
+            "summary": summary_data,
+            "transactions": [],  # will fill below
+        }
+
+        # Build transactions list safely
+        df = form_obj.to_dataframe(include_metadata=False)
+        if df is not None and not df.empty:
+            # Convert whole dataframe to serializable form
+            records = df.replace([np.inf, -np.inf], None).to_dict(orient="records")
+            response_data["transactions"] = to_serializable(records)
+
+        # Final pass through to_serializable (catches any remaining numpy types in company/cik)
+        return JSONResponse(content=to_serializable(response_data))
+
+    except Exception as e:
+        # Log the full error for debugging
+        import traceback
+
+        traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
