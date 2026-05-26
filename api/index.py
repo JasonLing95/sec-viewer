@@ -485,13 +485,13 @@ def search_database(q: str):
 
 
 @app.get("/api/company/{cik}/overview")
-def get_company_overview(cik: str):
-    """Fetches broad company metadata and a mixed list of all recent filings."""
+def get_company_overview(cik: str, form_filter: str = "ALL", page: int = 1):
+    """Fetches company profile data alongside a dynamically bounded pool of filterable recent filings."""
     set_identity("data-pipeline@yourdomain.com")
     try:
         comp = Company(cik)
 
-        # 1. Extract Company Details
+        # Extract Company Details
         company_details = {
             "name": comp.name,
             "cik": str(cik),
@@ -514,21 +514,46 @@ def get_company_overview(cik: str):
                 ]
                 company_details["address"] = ", ".join(filter(None, address_parts))
 
-        # 2. Fetch All Recent Filings (Mixed Forms)
-        recent_filings = []
-        filings_obj = comp.get_filings()
+        limit = 40
+        # --- OPTIMIZATION: Dynamically request exactly what we need + 1 lookahead item ---
+        requested_pool_size = (page * limit) + 1
+        raw_pool = []
 
-        if filings_obj is not None:
-            latest_res = filings_obj.latest(100)  # Grab the last 100 filings
-            if latest_res is not None:
-                if latest_res is not None:
-                    if hasattr(latest_res, "__iter__"):
-                        f_list = list(latest_res)
-                    else:
-                        f_list = [latest_res]
-
+        if form_filter != "ALL":
+            filings_obj = comp.get_filings(form=form_filter)
+            if filings_obj is not None:
+                latest_filings = filings_obj.latest(
+                    requested_pool_size
+                )  # Bounded lookahead
+                f_list = (
+                    list(latest_filings)
+                    if hasattr(latest_filings, "__iter__")
+                    else ([latest_filings] if latest_filings else [])
+                )
                 for f in f_list:
-                    recent_filings.append(
+                    raw_pool.append(
+                        {
+                            "form": f.form,
+                            "date": str(f.filing_date),
+                            "accession_no": str(f.accession_no),
+                            "report_period": (
+                                str(f.period_of_report) if f.period_of_report else "N/A"
+                            ),
+                        }
+                    )
+        else:
+            filings_obj = comp.get_filings()
+            if filings_obj is not None:
+                latest_filings = filings_obj.latest(
+                    requested_pool_size
+                )  # Bounded lookahead
+                f_list = (
+                    list(latest_filings)
+                    if hasattr(latest_filings, "__iter__")
+                    else ([latest_filings] if latest_filings else [])
+                )
+                for f in f_list:
+                    raw_pool.append(
                         {
                             "form": f.form,
                             "date": str(f.filing_date),
@@ -539,8 +564,23 @@ def get_company_overview(cik: str):
                         }
                     )
 
+        # Sort the optimized pool chronologically
+        raw_pool.sort(key=lambda x: x["date"], reverse=True)
+
+        # Slice down to the exact page window
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+
+        sliced_filings = raw_pool[start_idx:end_idx]
+        has_more = len(raw_pool) > end_idx
+
         return JSONResponse(
-            content={"details": company_details, "filings": recent_filings}
+            content={
+                "details": company_details,
+                "filings": sliced_filings,
+                "page": page,
+                "has_more": has_more,
+            }
         )
 
     except Exception as e:
@@ -1325,11 +1365,11 @@ def get_financial_trends(accession_no: str, stmt_type: str):
 
 
 def to_serializable(obj):
-    """Recursively convert numpy/pandas types to Python types."""
+    """Recursively convert numpy/pandas types to Python types and sanitize NaN/Inf."""
     if isinstance(obj, (np.integer, np.int64, np.int32)):
         return int(obj)
-    if isinstance(obj, (np.floating, np.float64, np.float32)):
-        return None if np.isnan(obj) else float(obj)
+    if isinstance(obj, (float, np.floating, np.float64, np.float32)):
+        return None if np.isnan(obj) or np.isinf(obj) else float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, pd.Timestamp):

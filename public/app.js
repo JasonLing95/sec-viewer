@@ -19,10 +19,13 @@ let isTrendMode = false;
 let trendCache = { income: null, balance: null, cash: null };
 let splitsCache = [];
 
-// ==========================================
-// GLOBAL SEARCH LOGIC
-// ==========================================
 let searchTimeout = null;
+
+// --- CORPORATE STATE ---
+let currentCorporatePage = 1;
+let currentModule = '13f'; // Track which module is active
+
+let currentOverviewPage = 1;
 
 function hideAllViews() {
     const views = [
@@ -265,20 +268,35 @@ function loadFilings(page) {
 // FETCH AND SPLIT HOLDINGS
 // ==========================================
 function fetchHoldings(accessionNo, updateUrl = true) {
-    hideAllViews();
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentMod = urlParams.get('module');
+    const currentCik = urlParams.get('cik');
 
+    hideAllViews();
     cachedPortfolioSummary = "";
 
-    // NEW: Push the accession number to the browser URL
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('accession', accessionNo);
+        if (currentMod === 'overview' && currentCik) {
+            url.searchParams.set('origin', 'overview');
+            url.searchParams.set('originCik', currentCik);
+        }
         window.history.pushState({ accessionNo }, '', url);
     }
 
+    const finalUrlParams = new URLSearchParams(window.location.search);
+    const origin = finalUrlParams.get('origin');
+    const originCik = finalUrlParams.get('originCik');
     const backBtn = document.getElementById('back-btn');
-    backBtn.innerText = "← Back to 13F List"; // Keep button context accurate
-    backBtn.onclick = () => switchModule(null, '13f');
+
+    if (origin === 'overview' && originCik) {
+        backBtn.innerText = "← Back to Company Overview";
+        backBtn.onclick = () => loadCompanyOverview(originCik, currentOverviewPage);
+    } else {
+        backBtn.innerText = "← Back to 13F List";
+        backBtn.onclick = () => switchModule(null, '13f');
+    }
     backBtn.style.display = 'block';
 
     document.getElementById('holdings-view').style.display = 'block';
@@ -645,10 +663,6 @@ function triggerAiSummary() {
     });
 }
 
-// --- CORPORATE STATE ---
-let currentCorporatePage = 1;
-let currentModule = '13f'; // Track which module is active
-
 function switchModule(event, module, updateUrl = true) {
     if (event) event.preventDefault();
     currentModule = module;
@@ -669,6 +683,9 @@ function switchModule(event, module, updateUrl = true) {
         url.searchParams.delete('p');
         url.searchParams.delete('d');
         url.searchParams.delete('s');
+        
+        url.searchParams.delete('cik');
+        url.searchParams.delete('page');
         window.history.pushState({ module: module }, '', url);
     }
     
@@ -974,7 +991,17 @@ function changeFormDPage(dir) {
 }
 
 // --- NEW DATA FETCHER ---
-function loadCompanyOverview(cik) {
+function loadCompanyOverview(cik, page = 1, updateUrl = true) {
+    currentOverviewPage = page;
+
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', 'overview');
+        url.searchParams.set('cik', cik);
+        url.searchParams.set('page', page);
+        window.history.pushState({ module: 'overview', cik: cik, page: page }, '', url);
+    }
+
     hideAllViews();
 
     document.getElementById('nav-13f').classList.remove('active');
@@ -996,17 +1023,25 @@ function loadCompanyOverview(cik) {
     document.getElementById('back-btn').style.display = 'none';
     document.getElementById('filings-controls').style.display = 'none';
     
+    document.getElementById('page-title').innerText = "Company Overview";
     document.getElementById('ov-name').innerText = "Fetching SEC Database...";
     
     const tbody = document.getElementById('overview-body');
     tbody.innerHTML = `<tr><td colspan="6" class="loading">Loading comprehensive history for CIK ${cik}...</td></tr>`;
 
-    fetch(`/api/company/${cik}/overview`)
+    // Initialize local pagination markers dynamically
+    document.getElementById('ov-ind').innerText = `Page ${page}`;
+    document.getElementById('ov-prev').disabled = page === 1;
+    document.getElementById('ov-next').disabled = true;
+
+    const filterValue = document.getElementById('overview-form-filter') ? document.getElementById('overview-form-filter').value : "ALL";
+
+    fetch(`/api/company/${cik}/overview?form_filter=${encodeURIComponent(filterValue)}&page=${currentOverviewPage}`)
         .then(res => res.json())
         .then(data => {
             if (data.error) throw new Error(data.error);
             
-            // Populate Header Details
+            // Map Broad Corporate Metadata Panel
             const d = data.details;
             document.getElementById('page-title').innerText = d.name;
             document.getElementById('ov-name').innerText = d.name;
@@ -1017,54 +1052,108 @@ function loadCompanyOverview(cik) {
             document.getElementById('ov-phone').innerText = d.phone;
             document.getElementById('ov-add').innerText = d.address;
 
-            // Populate Mixed Filings Table
-            tbody.innerHTML = '';
-            if (data.filings.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No filings found for this entity.</td></tr>`;
-                return;
-            }
+            // Unlock next page button iteratively
+            document.getElementById('ov-next').disabled = !data.has_more;
             
-            data.filings.forEach((f, i) => {
-                const cikStripped = String(d.cik).replace(/^0+/, '');
-                const accStripped = String(f.accession_no).replace(/-/g, '');
-                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
-
-                // Give the badges different colors based on form type for scannability
-                let badgeStyle = "background: #e0e0e0; color: #333;";
-                if (f.form.includes('13F')) badgeStyle = "background: #2e7d32; color: white;";
-                else if (f.form.includes('10-K') || f.form.includes('10-Q')) badgeStyle = "background: #ff9800; color: white;";
-                else if (f.form === '4' || f.form === '4/A') badgeStyle = "background: #0070f3; color: white;";
-                else if (f.form.includes('8-K')) badgeStyle = "background: #c62828; color: white;";
-
-                // Smart Actions: If it's a 13F-HR, let them jump into the deep dive holdings view.
-                // Otherwise, just link them to the raw SEC document.
-                let actionHtml = `<a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;">View SEC ↗</a>`;
-
-                if (f.form === '13F-HR') {
-                    actionHtml = `<button onclick="fetchHoldings('${f.accession_no}')" class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #2e7d32;">Analyze Portfolio 📊</button>`;
-                } else if (f.form === '10-K' || f.form === '10-Q') {
-                    // Safely escape the global company name and handle missing periods
-                    const safeCompany = data.company ? String(data.company).replace(/'/g, "&apos;").replace(/"/g, "&quot;") : "N/A";
-                    const rPeriod = f.report_period || "N/A";
-                    const rDate = f.filing_date || f.date || "N/A"; // Handle both naming conventions
-
-                    actionHtml = `<button onclick="openCorporateDocument('${safeCompany}', '${f.form}', '${rPeriod}', '${rDate}', '${f.accession_no}', '${secHtmlUrl}')" 
-                                    class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #ff9800;">Read Document</button>`;
-                }
-
-                tbody.innerHTML += `<tr>
-                    <td>${i + 1}</td>
-                    <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
-                    <td>${f.report_period}</td> 
-                    <td>${f.date}</td>
-                    <td class="mono">${f.accession_no}</td>
-                    <td>${actionHtml}</td>
-                </tr>`;
-            });
+            // Rebuild rows inside the data view engine
+            renderOverviewTableData(data.filings || [], page);
         })
         .catch(err => {
             tbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
         });
+}
+
+function renderOverviewTableData(filingsArray, page = 1) {
+    const tbody = document.getElementById('overview-body');
+    const companyName = document.getElementById('ov-name').innerText;
+    tbody.innerHTML = '';
+    
+    if (filingsArray.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:20px; color:#666;">No filings found matching your filtering parameters for this index page.</td></tr>`;
+        return;
+    }
+
+    const offset = (page - 1) * 40;
+
+    filingsArray.forEach((f, i) => {
+        const cikStr = document.getElementById('ov-cik').innerText;
+        const cikStripped = String(cikStr).replace(/^0+/, '');
+        const accStripped = String(f.accession_no).replace(/-/g, '');
+        const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+
+        const formUpper = f.form.toUpperCase();
+        
+        // Map supported internal deep dive targets
+        const is13F = formUpper === '13F-HR';
+        const isCorp = formUpper === '10-K' || formUpper === '10-Q';
+        const isInsider = formUpper === '4' || formUpper === '4/A';
+        const is13D = formUpper === 'SCHEDULE 13D' || formUpper === 'SCHEDULE 13D/A';
+        const isFormD = formUpper === 'D' || formUpper === 'D/A';
+        
+        const isTerminalViewable = is13F || isCorp || isInsider || is13D || isFormD;
+
+        // Dynamic badge logic assignment
+        let badgeStyle = "background: #e0e0e0; color: #333;";
+        if (is13F) badgeStyle = "background: #2e7d32; color: white;";
+        else if (isCorp) badgeStyle = f.form === '10-K' ? 'background: #4a148c; color: white;' : 'background: #ff9800; color: white;';
+        else if (isInsider) badgeStyle = "background: #0070f3; color: white;";
+        else if (is13D) badgeStyle = "background: #e91e63; color: white;";
+        else if (isFormD) badgeStyle = "background: #673ab7; color: white;";
+        else if (formUpper.includes('8-K')) badgeStyle = "background: #c62828; color: white;";
+
+        let clickActionAttr = "";
+        let rowCursorStyle = "";
+        let cellDecoration = "";
+
+        const safeCompany = companyName.replace(/'/g, "\\'");
+        const reportPeriod = f.report_period || "N/A";
+
+        // Bind interactive target actions if supported natively by the terminal view model layout structures
+        if (isTerminalViewable) {
+            rowCursorStyle = "cursor: pointer;";
+            cellDecoration = "color: #0070f3; font-weight: bold;";
+            
+            if (is13F) {
+                clickActionAttr = `onclick="fetchHoldings('${f.accession_no}')"`;
+            } else if (isCorp) {
+                clickActionAttr = `onclick="openCorporateDocument('${safeCompany}', '${f.form}', '${reportPeriod}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')"`;
+            } else if (isInsider) {
+                clickActionAttr = `onclick="openInsiderDocument('${safeCompany}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')"`;
+            } else if (is13D) {
+                clickActionAttr = `onclick="open13DDocument('${safeCompany}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')"`;
+            } else if (isFormD) {
+                clickActionAttr = `onclick="openFormDDocument('${safeCompany}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')"`;
+            }
+        }
+
+       let actionButtonHtml = `<a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;" onclick="event.stopPropagation();">SEC ↗</a>`;
+        if (isTerminalViewable) {
+            actionButtonHtml = `<button class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #0070f3; margin-right: 4px;">Open</button>${actionButtonHtml}`;
+        }
+
+        tbody.innerHTML += `<tr style="${rowCursorStyle}" ${clickActionAttr}>
+            <td>${offset + i + 1}</td>
+            <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
+            <td>${reportPeriod}</td> 
+            <td>${f.date}</td>
+            <td class="mono" style="${cellDecoration}">${f.accession_no}</td>
+            <td style="display: flex; gap: 4px;">${actionButtonHtml}</td>
+        </tr>`;
+    });
+}
+
+function changeOverviewPage(dir) {
+    const targetCik = document.getElementById('ov-cik').innerText;
+    if (targetCik && targetCik !== '-') {
+        loadCompanyOverview(targetCik, currentOverviewPage + dir);
+    }
+}
+
+function filterOverviewTable() {
+    const targetCik = document.getElementById('ov-cik').innerText;
+    if (targetCik && targetCik !== '-') {
+        loadCompanyOverview(targetCik, 1); // Jump straight back to page 1 on filter changes
+    }
 }
 
 // --- CORPORATE VIEWER STATE ---
@@ -1076,6 +1165,11 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
     trendCache = { income: null, balance: null, cash: null };
     splitsCache = [];
 
+    // Capture context state BEFORE wiping views or changing URLs
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentMod = urlParams.get('module');
+    const currentCik = urlParams.get('cik');
+
     hideAllViews();
 
     if (document.getElementById('trend-btn')) {
@@ -1083,7 +1177,6 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
         document.getElementById('trend-btn').style.background = "#1976d2";
     }
 
-    // 1. Fallback to ensure we never crash on undefined variables
     const safeCompany = company && company !== 'undefined' ? company : "Unknown Company";
     const safeForm = form && form !== 'undefined' ? form : "N/A";
     const safePeriod = period && period !== 'undefined' ? period : "N/A";
@@ -1099,23 +1192,32 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
         url.searchParams.set('p', safePeriod);
         url.searchParams.set('d', safeDate);
         url.searchParams.set('s', secUrl);
+        
+        // If we came from a company profile overview, lock the origin context parameters to the URL string
+        if (currentMod === 'overview' && currentCik) {
+            url.searchParams.set('origin', 'overview');
+            url.searchParams.set('originCik', currentCik);
+        }
         window.history.pushState({ doc: safeAcc }, '', url);
     }
 
-    document.getElementById('back-btn').onclick = () => switchModule(null, 'corp');
+    // INTERACTIVE CONTEXT BACK ACTION LOGIC
+    const finalUrlParams = new URLSearchParams(window.location.search);
+    const origin = finalUrlParams.get('origin');
+    const originCik = finalUrlParams.get('originCik');
+    const backBtn = document.getElementById('back-btn');
 
-    // 2. Hide all other views
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if (document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
-    if (document.getElementById('formd-doc-view')) document.getElementById('formd-doc-view').style.display = 'none';
+    if (origin === 'overview' && originCik) {
+        backBtn.innerText = "← Back to Company Overview";
+        backBtn.onclick = () => loadCompanyOverview(originCik, currentOverviewPage);
+    } else {
+        backBtn.innerText = "← Back to Corporate List";
+        backBtn.onclick = () => switchModule(null, 'corp');
+    }
 
-    // 3. Show the document view
+    // Show the document view
     document.getElementById('corp-doc-view').style.display = 'block';
-    document.getElementById('back-btn').style.display = 'block';
+    backBtn.style.display = 'block';
     document.getElementById('filings-controls').style.display = 'none';
     document.getElementById('page-title').innerText = "Corporate Financials";
 
@@ -1183,6 +1285,10 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
 }
 
 function openInsiderDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentMod = urlParams.get('module');
+    const currentCik = urlParams.get('cik');
+
     hideAllViews();
 
     if (updateUrl) {
@@ -1193,15 +1299,27 @@ function openInsiderDocument(company, form, date, accession_no, secUrl, updateUr
         url.searchParams.set('f', form);
         url.searchParams.set('d', date);
         url.searchParams.set('s', secUrl);
+        if (currentMod === 'overview' && currentCik) {
+            url.searchParams.set('origin', 'overview');
+            url.searchParams.set('originCik', currentCik);
+        }
         window.history.pushState({ doc: accession_no }, '', url);
     }
 
+    const finalUrlParams = new URLSearchParams(window.location.search);
+    const origin = finalUrlParams.get('origin');
+    const originCik = finalUrlParams.get('originCik');
     const backBtn = document.getElementById('back-btn');
-    backBtn.innerText = "← Back to Insider List"; // Keep button context accurate
-    backBtn.onclick = () => switchModule(null, 'insider');
+
+    if (origin === 'overview' && originCik) {
+        backBtn.innerText = "← Back to Company Overview";
+        backBtn.onclick = () => loadCompanyOverview(originCik, currentOverviewPage);
+    } else {
+        backBtn.innerText = "← Back to Insider List";
+        backBtn.onclick = () => switchModule(null, 'insider');
+    }
     backBtn.style.display = 'block';
 
-    // 2. Open the insider panel states explicitly here
     document.getElementById('insider-doc-view').style.display = 'block';
     document.getElementById('filings-controls').style.display = 'none';
     document.getElementById('page-title').innerText = "Insider Transaction Detail";
@@ -1773,6 +1891,12 @@ function load13dFilings(page) {
 // SCHEDULE 13D ACTIVIST DEEP DIVE VIEW WRAPPER
 // ==========================================
 function open13DDocument(company, date, accession_no, secUrl, updateUrl = true) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentMod = urlParams.get('module');
+    const currentCik = urlParams.get('cik');
+
+    hideAllViews();
+
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('module', '13d');
@@ -1780,12 +1904,26 @@ function open13DDocument(company, date, accession_no, secUrl, updateUrl = true) 
         url.searchParams.set('c', company);
         url.searchParams.set('d', date);
         url.searchParams.set('s', secUrl);
+        if (currentMod === 'overview' && currentCik) {
+            url.searchParams.set('origin', 'overview');
+            url.searchParams.set('originCik', currentCik);
+        }
         window.history.pushState({ doc: accession_no }, '', url);
     }
 
-    hideAllViews();
+    const finalUrlParams = new URLSearchParams(window.location.search);
+    const origin = finalUrlParams.get('origin');
+    const originCik = finalUrlParams.get('originCik');
+    const backBtn = document.getElementById('back-btn');
 
-    document.getElementById('back-btn').onclick = () => switchModule(null, '13d');
+    if (origin === 'overview' && originCik) {
+        backBtn.innerText = "← Back to Company Overview";
+        backBtn.onclick = () => loadCompanyOverview(originCik, currentOverviewPage);
+    } else {
+        backBtn.innerText = "← Back to 13D List";
+        backBtn.onclick = () => switchModule(null, '13d');
+    }
+    backBtn.style.display = 'block';
 
     // Hide everything else
     document.getElementById('filings-view').style.display = 'none';
@@ -1851,6 +1989,12 @@ function open13DDocument(company, date, accession_no, secUrl, updateUrl = true) 
 // FORM D COMPREHENSIVE DETAIL DISPLAY LOADER
 // ==========================================
 function openFormDDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const currentMod = urlParams.get('module');
+    const currentCik = urlParams.get('cik');
+
+    hideAllViews();
+
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('module', 'formd');
@@ -1859,12 +2003,26 @@ function openFormDDocument(company, form, date, accession_no, secUrl, updateUrl 
         url.searchParams.set('f', form);
         url.searchParams.set('d', date);
         url.searchParams.set('s', secUrl);
+        if (currentMod === 'overview' && currentCik) {
+            url.searchParams.set('origin', 'overview');
+            url.searchParams.set('originCik', currentCik);
+        }
         window.history.pushState({ doc: accession_no }, '', url);
     }
 
-    hideAllViews();
+    const finalUrlParams = new URLSearchParams(window.location.search);
+    const origin = finalUrlParams.get('origin');
+    const originCik = finalUrlParams.get('originCik');
+    const backBtn = document.getElementById('back-btn');
 
-    document.getElementById('back-btn').onclick = () => switchModule(null, 'formd');
+    if (origin === 'overview' && originCik) {
+        backBtn.innerText = "← Back to Company Overview";
+        backBtn.onclick = () => loadCompanyOverview(originCik, currentOverviewPage);
+    } else {
+        backBtn.innerText = "← Back to Form D List";
+        backBtn.onclick = () => switchModule(null, 'formd');
+    }
+    backBtn.style.display = 'block';
 
     // Hide all other views
     document.getElementById('filings-view').style.display = 'none';
@@ -1998,13 +2156,14 @@ window.addEventListener('popstate', (event) => {
     const urlParams = new URLSearchParams(window.location.search);
     const currentAcc = urlParams.get('accession');
     const currentDoc = urlParams.get('doc');
-    const currentMod = urlParams.get('module') || '13f'; // Default to 13f if missing
+    const currentMod = urlParams.get('module') || '13f';
     
-    // Strip active classes
+    // Strip active classes safely
     document.getElementById('nav-13f').classList.remove('active');
     if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
     if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
     if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+    if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.remove('active'); // Added safety clean
 
     if (currentAcc) {
         document.getElementById('nav-13f').classList.add('active');
@@ -2016,20 +2175,21 @@ window.addEventListener('popstate', (event) => {
         if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.add('active');
         open13DDocument(urlParams.get('c'), urlParams.get('d'), currentDoc, urlParams.get('s'), false);
     } else if (currentDoc && currentMod === 'corp') {
-        // 2. Check Corporate Documents (10-K / 10-Q)
         if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.add('active');
-        openCorporateDocument(
-            urlParams.get('c'), urlParams.get('f'), urlParams.get('p'), 
-            urlParams.get('d'), currentDoc, urlParams.get('s'), false
-        );
+        openCorporateDocument(urlParams.get('c'), urlParams.get('f'), urlParams.get('p'), urlParams.get('d'), currentDoc, urlParams.get('s'), false);
     } else if (currentDoc && currentMod === 'insider') {
-        // 3. Check Form 4 Insider Document routing (Good practice to keep this matched up!)
         if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.add('active');
-        openInsiderDocument(
-            urlParams.get('c'), urlParams.get('f'), urlParams.get('d'), currentDoc, urlParams.get('s'), false
-        );
+        openInsiderDocument(urlParams.get('c'), urlParams.get('f'), urlParams.get('d'), currentDoc, urlParams.get('s'), false);
+    } else if (currentMod === 'overview') {
+        // --- ADD THIS EXPLICIT CHECK ---
+        const cik = urlParams.get('cik');
+        const page = parseInt(urlParams.get('page') || '1');
+        if (cik) {
+            loadCompanyOverview(cik, page, false); // false prevents pushing a duplicate state
+        } else {
+            switchModule(null, '13f', false);
+        }
     } else {
-        // Fallback for default list views
         switchModule(null, currentMod, false);
     }
 });
@@ -2052,19 +2212,20 @@ if (initialAcc) {
     if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.add('active');
     open13DDocument(initialUrlParams.get('c'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false);
 } else if (initialDoc && initialMod === 'corp') {
-    // Hard refresh into a Corporate document (10-K/10-Q)
     if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.add('active');
-    openCorporateDocument(
-        initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('p'), 
-        initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false
-    );
+    openCorporateDocument(initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('p'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false);
 } else if (initialDoc && initialMod === 'insider') {
-    // Hard refresh into a Form 4 Insider Document
     if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.add('active');
-    openInsiderDocument(
-        initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false
-    );
+    openInsiderDocument(initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false);
+} else if (initialMod === 'overview') {
+    // --- ADD THIS CONDITIONAL TO CATCH THE HARD OVERVIEW REFRESH ---
+    const initialCik = initialUrlParams.get('cik');
+    const initialPage = parseInt(initialUrlParams.get('page') || '1');
+    if (initialCik) {
+        loadCompanyOverview(initialCik, initialPage, false);
+    } else {
+        switchModule(null, '13f', false);
+    }
 } else {
-    // Hard refresh onto a standard table view list
     switchModule(null, initialMod, false);
 }
