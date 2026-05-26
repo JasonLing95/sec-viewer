@@ -17,6 +17,8 @@ from edgar import (
 from edgar.company_reports import TenK, TenQ
 from edgar.ttm import detect_splits
 from lxml import etree
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 from groq import Groq
 from pydantic import BaseModel
@@ -53,9 +55,9 @@ try:
     if os.path.exists(pq_path):
         holdings_df = pd.read_parquet(pq_path)
         # Assuming the parquet has 'cusip' and 'ticker' columns
-        if "cusip" in holdings_df.columns and "ticker" in holdings_df.columns:
+        if "Cusip" in holdings_df.columns and "Ticker" in holdings_df.columns:
             cusip_to_ticker = (
-                holdings_df.set_index("cusip")["ticker"].dropna().to_dict()
+                holdings_df.set_index("Cusip")["Ticker"].dropna().to_dict()
             )
             print(f"Loaded {len(cusip_to_ticker)} CUSIP mappings.")
 
@@ -1119,15 +1121,46 @@ def get_holdings(accession_no: str):
                 ]
                 company_details["address"] = ", ".join(filter(None, address_parts))
 
-            # Fetch the history to find the previous quarter
+            # Fetch the history to find the previous quarter by period_of_report
             recent_filings = comp.get_filings(form="13F-HR").latest(12)
-            for i, rf in enumerate(recent_filings):
+            for rf in recent_filings:
                 recent_list.append(
                     {"accession_no": rf.accession_no, "date": str(rf.filing_date)}
                 )
-                # Find the filing that immediately precedes the currently requested one
-                if rf.accession_no == accession_no and i + 1 < len(recent_filings):
-                    previous_filing = recent_filings[i + 1]
+                # Store all for later search
+
+            # --- IMPROVED LOGIC: find previous filing by period_of_report (quarter end) ---
+            current_period_str = filing.period_of_report
+            if current_period_str:
+                try:
+                    # Parse current period (format 'YYYY-MM-DD')
+                    current_period = datetime.strptime(current_period_str, "%Y-%m-%d")
+                    # Subtract exactly 3 months using relativedelta
+                    expected_prior_period = current_period - relativedelta(months=3)
+
+                    # Search for a filing with the exact expected quarter end
+                    for rf in recent_filings:
+                        if rf.accession_no == accession_no:
+                            continue
+                        if rf.period_of_report:
+                            try:
+                                rf_period = datetime.strptime(
+                                    rf.period_of_report, "%Y-%m-%d"
+                                )
+                                if rf_period == expected_prior_period:
+                                    previous_filing = rf
+                                    break
+                            except:
+                                pass
+                except Exception as e:
+                    print(f"Period parsing error: {e}")
+
+            # Fallback to original adjacent logic if exact match not found
+            if not previous_filing:
+                for i, rf in enumerate(recent_filings):
+                    if rf.accession_no == accession_no and i + 1 < len(recent_filings):
+                        previous_filing = recent_filings[i + 1]
+                        break
         except Exception as e:
             print(f"Metadata extraction failed: {e}")
 
@@ -1180,7 +1213,6 @@ def get_holdings(accession_no: str):
         for h in previous_holdings:
             key = f"{h[12]}_{h[7]}"  # CUSIP + Put/Call flag
             if key not in prev_dict:
-                # Store the SEC issuer name for historical reference
                 prev_dict[key] = {"shares": 0, "value_usd": 0, "issuer": h[11] or "N/A"}
             prev_dict[key]["shares"] += h[2]
             prev_dict[key]["value_usd"] += h[3]
@@ -1220,14 +1252,12 @@ def get_holdings(accession_no: str):
 
             # Separate the SEC Name and the Mapped Ticker
             sec_name = h[11] or "N/A"
-            mapped_ticker = cusip_to_ticker.get(
-                cusip, "-"
-            )  # Show "-" if no ticker is found
+            mapped_ticker = cusip_to_ticker.get(cusip, "-")
 
             processed_holdings.append(
                 {
                     "ticker": mapped_ticker,
-                    "issuer": sec_name,  # <--- NEW SEPARATE FIELD
+                    "issuer": sec_name,
                     "cusip": cusip,
                     "class": h[4],
                     "share_type": h[5],
@@ -1250,13 +1280,11 @@ def get_holdings(accession_no: str):
         for key, prev_data in prev_dict.items():
             if key not in current_keys:
                 cusip, put_call = key.split("_")
-
                 mapped_ticker = cusip_to_ticker.get(cusip, "-")
-
                 processed_holdings.append(
                     {
                         "ticker": mapped_ticker,
-                        "issuer": prev_data["issuer"],  # <--- NEW SEPARATE FIELD
+                        "issuer": prev_data["issuer"],
                         "cusip": cusip,
                         "class": "N/A",
                         "share_type": "N/A",

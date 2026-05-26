@@ -77,182 +77,194 @@
 
         /* GLOBAL NAVBAR STYLES */
         .global-header {
-            background-color: #111;
-            color: #fff;
-            padding: 6px 20px; /* Reduced from 12px to 6px for a leaner look */
+            background-color: #000000;      /* pure black */
+            height: 42px;                   /* compact */
+            padding: 0 24px;
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            justify-content: space-between;
+            font-family: 'Arial', 'Helvetica', sans-serif;
+            border-bottom: 1px solid #2a2a2a;
             position: sticky;
             top: 0;
-            z-index: 100;
+            z-index: 1000;
         }
+
         .brand {
-            font-size: 16px; 
-            font-weight: 800;
-            letter-spacing: 0.5px;
             display: flex;
             align-items: center;
             gap: 8px;
-            cursor: pointer; /* NEW: Makes it look clickable */
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 700;
+            color: #ffffff;
+            margin-right: 28px;
         }
-        .brand-logo { background: #2e7d32; color: white; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 14px;}
-        
-        /* NEW INLINE FORM NAVIGATION */
+        .brand-logo {
+            background: none;
+            color: #ffffff;
+            font-size: 18px;
+            padding: 0;
+            border-radius: 0;
+        }
+        .brand span:not(.brand-logo) {
+            color: #a0a0a0;
+            font-size: 14px;
+            font-weight: 400;
+        }
+
         .form-nav {
             display: flex;
-            gap: 10px;
-            margin-left: 30px;
+            align-items: center;
+            gap: 0;
+            height: 42px;
         }
-        .form-nav a {
-            color: #aaa;
+        .form-nav a, .form-selector-btn {
+            color: #b0b0b0;
             text-decoration: none;
-            font-size: 12px;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 0 14px;
+            height: 42px;
+            line-height: 42px;
+            display: inline-block;
+            border-bottom: 2px solid transparent;
+            transition: all 0.1s ease;
+            background: transparent;
+            cursor: pointer;
+        }
+        .form-nav a:hover, .form-selector-btn:hover {
+            color: #ffffff;
+            border-bottom-color: #ffffff;
+        }
+        .form-nav a.active {
+            color: #ffffff;
+            border-bottom-color: #ffffff;
             font-weight: 600;
-            padding: 4px 10px;
-            border-radius: 4px;
-            transition: all 0.2s;
         }
-        .form-nav a:hover { color: #fff; background: #333; }
-        .form-nav a.active { color: #fff; background: #0070f3; }
-        
-        .global-search {
-            background: #222;
-            border: 1px solid #444;
-            color: #fff;
-            padding: 4px 12px; /* Leaner search bar */
-            border-radius: 4px;
-            width: 300px;
-            font-size: 12px;
-            transition: all 0.2s;
-        }
-        .global-search:focus { outline: none; border-color: #0070f3; background: #000; }
-        .global-search::placeholder { color: #888; }
-        
-        .header-links a { color: #aaa; text-decoration: none; font-size: 12px; font-weight: 600; margin-left: 20px; transition: color 0.2s; }
-        .header-links a:hover { color: #fff; }
 
-        /* FORM SELECTOR DROPDOWN */
+        /* Optional dropdown for "More" – keep if you use it */
         .form-selector {
             position: relative;
-            display: inline-block;
-            margin-left: 25px;
-        }
-        .form-selector-btn {
-            background: #222;
-            color: #fff;
-            padding: 6px 12px;
-            border: 1px solid #444;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            transition: border-color 0.2s;
-        }
-        .form-selector-btn:hover {
-            border-color: #0070f3;
         }
         .dropdown-content {
             display: none;
             position: absolute;
-            background-color: #222;
-            min-width: 220px;
-            box-shadow: 0px 8px 16px rgba(0,0,0,0.5);
-            z-index: 101;
-            border-radius: 4px;
-            border: 1px solid #444;
-            top: 100%;
-            margin-top: 4px;
+            top: 42px;
             left: 0;
-        }
-        .dropdown-content a {
-            color: #ccc;
-            padding: 10px 16px;
-            text-decoration: none;
-            display: block;
-            font-size: 12px;
-            border-bottom: 1px solid #333;
-        }
-        .dropdown-content a:last-child { border-bottom: none; }
-        .dropdown-content a:hover {
-            background-color: #333;
-            color: #fff;
+            background-color: #1f1f1f;
+            min-width: 170px;
+            border: 1px solid #333;
+            z-index: 1001;
         }
         .form-selector:hover .dropdown-content {
             display: block;
         }
-        /* Highlight the currently active form */
-        .active-form {
-            color: #0070f3 !important;
-            font-weight: bold;
-            background-color: rgba(0, 112, 243, 0.1);
+        .dropdown-content a {
+            color: #cccccc;
+            padding: 8px 16px;
+            font-size: 12px;
+            background: #1f1f1f;
+            text-decoration: none;
+            display: block;
+        }
+        .dropdown-content a:hover {
+            background-color: #2a2a2a;
+            color: white;
         }
 
-        /* SEARCH DROPDOWN STYLES */
         .search-container {
             position: relative;
+            width: 260px;
         }
+        .global-search {
+            background-color: #0a0a0a;
+            border: 1px solid #3a3a3a;
+            color: #e0e0e0;
+            padding: 5px 8px;
+            width: 100%;
+            font-size: 12px;
+            border-radius: 0;
+            outline: none;
+        }
+        .global-search:focus {
+            border-color: #777;
+            background-color: #0a0a0a;
+        }
+        .global-search::placeholder {
+            color: #6a6a6a;
+            font-size: 11px;
+        }
+
         .search-dropdown {
             position: absolute;
-            top: 100%;
+            top: 32px;
             left: 0;
             width: 100%;
-            background: #222;
-            border: 1px solid #444;
+            background-color: #0f0f0f;
+            border: 1px solid #333;
             border-top: none;
-            border-radius: 0 0 4px 4px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-            z-index: 200;
-            display: none;
-            max-height: 400px;
+            max-height: 360px;
             overflow-y: auto;
+            z-index: 1100;
+            display: none;
         }
         .search-item {
-            padding: 10px 12px;
+            padding: 6px 10px;
             cursor: pointer;
-            border-bottom: 1px solid #333;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
+            border-bottom: 1px solid #222;
         }
-        .search-item:last-child { border-bottom: none; }
-        .search-item:hover { background: #333; }
-        .search-item-name { color: #fff; font-size: 12px; font-weight: bold; }
-        .search-item-cik { color: #888; font-size: 10px; font-family: monospace; }
-        .search-loading { padding: 10px; color: #888; font-size: 12px; text-align: center; font-style: italic; }
+        .search-item:hover {
+            background-color: #1e1e1e;
+        }
+        .search-item-name {
+            color: #ddd;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .search-item-cik {
+            color: #888;
+            font-size: 10px;
+        }
+        .search-loading {
+            padding: 10px;
+            color: #888;
+            font-size: 12px;
+            text-align: center;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
     <nav class="global-header">
-        <div style="display: flex; align-items: center;">
+        <div style="display: flex; align-items: center; height: 100%;">
             <div class="brand" onclick="switchModule(null, '13f')">
                 <span class="brand-logo">MQ</span> Moniq Terminal
             </div>
-            
             <div class="form-nav">
                 <a href="#" id="nav-13f" class="active" onclick="switchModule(event, '13f')">13F-HR</a>
                 <a href="#" id="nav-corp" onclick="switchModule(event, 'corp')">10-Q / 10-K</a>
                 <a href="#" id="nav-insider" onclick="switchModule(event, 'insider')">Form 4</a>
                 <a href="#" id="nav-formd" onclick="switchModule(event, 'formd')">Form D</a>
                 <a href="#" id="nav-13d" onclick="switchModule(event, '13d')">Schedule 13D</a>
-            </div>
-        </div>
-        
-        <div class="search-container">
-            <input type="text" id="global-search-input" class="global-search" placeholder="Search Funds, Managers, or CIK..." onkeyup="handleGlobalSearch(event)" autocomplete="off">
-            
-            <div id="search-dropdown" class="search-dropdown">
+                
+                <!-- NEW: "More" dropdown with dummy forms -->
+                <div class="form-selector">
+                    <div class="form-selector-btn">More ▼</div>
+                    <div class="dropdown-content">
+                        <a href="#" onclick="event.preventDefault(); alert('Form 8-K - Coming Soon')">Form 8-K</a>
+                        <a href="#" onclick="event.preventDefault(); alert('DEF 14A - Coming Soon')">DEF 14A</a>
+                        <a href="#" onclick="event.preventDefault(); alert('S-1 - Coming Soon')">S-1</a>
+                        <a href="#" onclick="event.preventDefault(); alert('Schedule 13G - Coming Soon')">Schedule 13G</a>
+                    </div>
                 </div>
-        </div>
-        
-        <div class="header-links">
-            <a href="#">Watchlist</a>
-            <a href="#">Market Trends</a>
             </div>
+        </div>
+        <div class="search-container">
+            <input type="text" id="global-search-input" class="global-search"
+                placeholder="Search CIK / fund name..." onkeyup="handleGlobalSearch(event)" autocomplete="off">
+            <div id="search-dropdown" class="search-dropdown"></div>
+        </div>
     </nav>
 
 <div class="main-content">

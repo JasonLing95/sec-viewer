@@ -955,23 +955,28 @@ function loadFormDFilings(page) {
                 const badgeStyle = f.form === 'D/A' 
                     ? 'background: #9c27b0; color: white;' 
                     : 'background: #673ab7; color: white;';
+                
+                const companyName = f.company;
+                const safeCompany = companyName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+                const encodedCompany = encodeURIComponent(companyName);
+                const encodedUrl = encodeURIComponent(secHtmlUrl);
 
-                // CHANGED: Wired up custom detail loader tracking parameters safely
-                tbody.innerHTML += `<tr style="cursor: pointer;">
+                tbody.innerHTML += `<tr style="cursor: pointer;" 
+                    onclick="openFormDDocument(decodeURIComponent('${encodedCompany}'), '${f.form}', '${f.date}', '${f.accession_no}', decodeURIComponent('${encodedUrl}'))">
                     <td>${offset + i + 1}</td>
                     <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
-                    <td style="font-weight: bold; color: #111;">${f.company}</td>
+                    <td style="font-weight: bold; color: #111;">${companyName}</td>
                     <td class="mono">${f.cik}</td>
-                    <td>${f.report_period}</td> 
+                    <td>${f.report_period}</td>
                     <td>${f.date}</td>
                     <td class="mono">
-                        <a href="javascript:void(0);" onclick="openFormDDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                        <a href="javascript:void(0);" onclick="openFormDDocument('${safeCompany}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
                         style="color: #673ab7; text-decoration: underline; font-weight: bold;">
                             ${f.accession_no}
                         </a>
                     </td>
                     <td style="display: flex; gap: 8px;">
-                        <button onclick="openFormDDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                        <button onclick="openFormDDocument('${safeCompany}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
                                 class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #673ab7;">
                             View Offering
                         </button>
@@ -1995,6 +2000,9 @@ function open13DDocument(company, date, accession_no, secUrl, updateUrl = true) 
 // FORM D COMPREHENSIVE DETAIL DISPLAY LOADER
 // ==========================================
 function openFormDDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    company = decodeURIComponent(company);
+    secUrl = decodeURIComponent(secUrl);
+
     const urlParams = new URLSearchParams(window.location.search);
     const currentMod = urlParams.get('module');
     const currentCik = urlParams.get('cik');
