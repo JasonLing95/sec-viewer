@@ -674,19 +674,20 @@ function switchModule(event, module, updateUrl = true) {
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('module', module);
-        url.searchParams.delete('accession'); 
-        
-        // Clean up any Document deep-dive parameters
+
+        url.searchParams.delete('accession');
         url.searchParams.delete('doc');
         url.searchParams.delete('c');
         url.searchParams.delete('f');
         url.searchParams.delete('p');
         url.searchParams.delete('d');
         url.searchParams.delete('s');
-        
         url.searchParams.delete('cik');
         url.searchParams.delete('page');
-        window.history.pushState({ module: module }, '', url);
+        
+        url.searchParams.delete('origin');
+        url.searchParams.delete('originCik');
+        window.history.pushState({ module: module }, '', url.toString().replace('#', ''));
     }
     
     // Clear all tab active highlights safely
@@ -1087,7 +1088,8 @@ function renderOverviewTableData(filingsArray, page = 1) {
         const is13F = formUpper === '13F-HR';
         const isCorp = formUpper === '10-K' || formUpper === '10-Q';
         const isInsider = formUpper === '4' || formUpper === '4/A';
-        const is13D = formUpper === 'SCHEDULE 13D' || formUpper === 'SCHEDULE 13D/A';
+        const is13D = formUpper === 'SCHEDULE 13D';
+        const is13DA = formUpper === 'SCHEDULE 13D/A';
         const isFormD = formUpper === 'D' || formUpper === 'D/A';
         
         const isTerminalViewable = is13F || isCorp || isInsider || is13D || isFormD;
@@ -1097,7 +1099,8 @@ function renderOverviewTableData(filingsArray, page = 1) {
         if (is13F) badgeStyle = "background: #2e7d32; color: white;";
         else if (isCorp) badgeStyle = f.form === '10-K' ? 'background: #4a148c; color: white;' : 'background: #ff9800; color: white;';
         else if (isInsider) badgeStyle = "background: #0070f3; color: white;";
-        else if (is13D) badgeStyle = "background: #e91e63; color: white;";
+        else if (is13D) badgeStyle = "background: #c2185b; color: white;"; // Darker Pink for Original
+        else if (is13DA) badgeStyle = "background: #e91e63; color: white;";
         else if (isFormD) badgeStyle = "background: #673ab7; color: white;";
         else if (formUpper.includes('8-K')) badgeStyle = "background: #c62828; color: white;";
 
@@ -1870,9 +1873,12 @@ function load13dFilings(page) {
                 const companyName = f.company_name || 'Unknown Issuer';
                 const safeCompany = companyName.replace(/'/g, "\\'");
 
+                const is13DA = f.form.toUpperCase() === 'SCHEDULE 13D/A';
+                const badgeStyle = is13DA ? "background: #e91e63; color: white;" : "background: #c2185b; color: white;";
+
                 return `<tr style="cursor: pointer;" onclick="open13DDocument('${safeCompany}', '${f.filing_date}', '${f.accession_no}', '${secHtmlUrl}')">
                     <td>${i + 1}</td>
-                    <td><span class="badge" style="background: #e91e63; color: white;">${f.form}</span></td>
+                    <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
                     <td style="font-weight: bold; color: #111;">${companyName}</td>
                     <td class="mono">${f.cik}</td>
                     <td>${f.filing_date}</td> 
@@ -2147,6 +2153,66 @@ function openFormDDocument(company, form, date, accession_no, secUrl, updateUrl 
             salesBody.innerHTML = `<tr><td colspan="4" style="color:red;">Error details tracking failed.</td></tr>`;
         });
 }
+
+// ==========================================
+// LEGAL DOCUMENTS DISPLAY ENGINE
+// ==========================================
+function openLegalModal(type) {
+    const modal = document.getElementById('legal-modal');
+    const title = document.getElementById('legal-modal-title');
+    const content = document.getElementById('legal-modal-content');
+    
+    if (!modal || !title || !content) return;
+
+    if (type === 'tos') {
+        title.innerText = "Terms of Service & Financial Disclaimer";
+        content.innerHTML = `
+            <p style="margin-top:0; font-weight:bold; color:#111;">1. Scope of Service</p>
+            <p>Moniq Terminal is an independent corporate data visualization and pipeline interface that aggregates, parses, and formats public regulatory disclosures sourced directly from the U.S. Securities and Exchange Commission (SEC) EDGAR system. All utilities are provided strictly for informational, research, and educational utilities.</p>
+            
+            <p style="font-weight:bold; color:#c62828;">2. Financial Disclaimer & No Investment Advice</p>
+            <p><strong>Moniq Terminal does not offer investment, financial, tax, or legal advice.</strong> The developer is not a registered financial advisor, asset manager, or broker-dealer. No data matrix, automated dashboard row, or analytical evaluation generated by this tool constitutes a recommendation, endorsement, or solicitation to buy, buy options on, or sell any security.</p>
+            <p>You accept complete and absolute responsibility for your own investment evaluations and execution strategies. Any investment decisions made based on data processed through this site are done entirely at your own discretion and risk.</p>
+            
+            <p style="font-weight:bold; color:#111;">3. Limitation of Liability & Data Accuracy</p>
+            <p>Regulatory parsing engines extract records from dense XML, XBRL, and corporate documents. While we make optimization efforts to align tickers, volumes, and directional weights accurately, data is provided entirely <strong>"as is"</strong> and <strong>"as available."</strong></p>
+            <p>We declare no warranties regarding the absolute completeness, timing constraints, or structural accuracy of the data. Under no circumstances shall the developer or contributors be held liable for trading losses, capital impairments, execution deficiencies, or consequential damages resulting from the utility or performance of this application framework.</p>
+        `;
+    } else if (type === 'privacy') {
+        title.innerText = "Privacy Policy";
+        content.innerHTML = `
+            <p style="margin-top:0; font-weight:bold; color:#111;">1. Core Privacy Stance</p>
+            <p>Moniq Terminal values clean, un-tracked workflow structures. The application does not require user account registration, password creation, onboarding protocols, or any provisioning of explicit personal identities to browse corporate metrics.</p>
+            
+            <p style="font-weight:bold; color:#111;">2. Telemetry & Log Data Processing</p>
+            <p>To ensure network protection, maintain query routing safety, and guard against automated scrapers or malicious network traffic, temporary log components (such as client IP address headers, browser agent details, and timestamp metrics) are processed transiently by our web hosting layer and cloud database systems (Supabase).</p>
+            
+            <p style="font-weight:bold; color:#111;">3. Third-Party Integrations</p>
+            <ul style="padding-left:20px; margin:10px 0;">
+                <li><strong>SEC EDGAR:</strong> Query calls request data objects from government servers, utilizing required generic network identities. No consumer identities are transmitted.</li>
+                <li><strong>Featurebase:</strong> Feedback submissions and user voting routines are directed to our portal on Featurebase. If you make a submission anonymously, no lookup metadata or user accounts are enforced.</li>
+            </ul>
+            
+            <p style="font-weight:bold; color:#111;">4. Regulatory Alignment</p>
+            <p>The platform conforms to general transparent principles matching data minimizing mandates (such as GDPR framework clauses) by ensuring we neither store, resell, nor profile your historical search terms or private tracking habits.</p>
+        `;
+    }
+
+    modal.style.display = 'flex';
+}
+
+function closeLegalModal() {
+    const modal = document.getElementById('legal-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+// Close legal modals seamlessly if a user clicks outside the modal card box frame area
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('legal-modal');
+    if (modal && event.target === modal) {
+        closeLegalModal();
+    }
+});
 
 
 // ==========================================
