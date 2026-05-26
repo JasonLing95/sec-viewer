@@ -24,6 +24,21 @@ let splitsCache = [];
 // ==========================================
 let searchTimeout = null;
 
+function hideAllViews() {
+    const views = [
+        'filings-view', 'holdings-view', 'overview-view', 
+        'corporate-view', 'corp-doc-view', 
+        'insider-view', 'insider-doc-view', 
+        'formd-view', 'formd-doc-view', 
+        'thirteend-view', 'thirteend-doc-view'
+    ];
+    
+    views.forEach(viewId => {
+        const el = document.getElementById(viewId);
+        if (el) el.style.display = 'none';
+    });
+}
+
 function handleGlobalSearch(e) {
     const query = e.target.value.trim();
     const dropdown = document.getElementById('search-dropdown');
@@ -66,6 +81,15 @@ function handleGlobalSearch(e) {
 }
 
 function loadCompanyFilings(cik, companyName) {
+    hideAllViews();
+
+    // RESET HIGHLIGHT TO THE 13F TAB SINCE WE ARE WEAVING BACK INTO A 13F LIST
+    document.getElementById('nav-13f').classList.add('active');
+    if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
+    if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
+    if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+    if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.remove('active');
+
     // Close dropdown and reset search text
     document.getElementById('search-dropdown').style.display = 'none';
     document.getElementById('global-search-input').value = "";
@@ -73,13 +97,15 @@ function loadCompanyFilings(cik, companyName) {
     // Turn off global live auto-refresh
     document.getElementById('auto-refresh-cb').checked = false;
     toggleLiveMode();
-    
-    // Switch to Filings View, but DO NOT fetch global data (pass false)
-    showFilingsView(false); 
+
+    // 2. Set up the local filings history view layout states directly
+    document.getElementById('filings-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
     document.getElementById('page-title').innerText = `13F-HR History: ${companyName}`;
-    
+
     const tbody = document.getElementById('filings-body');
-    tbody.innerHTML = `<tr><td colspan="5" class="loading">Loading SEC history for CIK ${cik}...</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="loading">Loading SEC history for CIK ${cik}...</td></tr>`;
     
     // Disable pagination since we are viewing a single company
     document.getElementById('f-prev').disabled = true;
@@ -93,23 +119,25 @@ function loadCompanyFilings(cik, companyName) {
             
             tbody.innerHTML = '';
             if (data.filings.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;">No 13F-HR filings found for this entity.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No 13F-HR filings found for this entity.</td></tr>`;
                 return;
             }
             
             data.filings.forEach((f, i) => {
-                tbody.innerHTML += `<tr onclick="fetchHoldings('${f.accession_no}')">
+                // Wired click target up natively
+                tbody.innerHTML += `<tr style="cursor: pointer;" onclick="fetchHoldings('${f.accession_no}')">
                     <td>${i + 1}</td>
-                    <td style="font-weight: bold;">${f.company}</td>
+                    <td style="font-weight: bold; color: #111;">${f.company}</td>
                     <td class="mono">${f.cik}</td>
-                    <td>${f.report_period}</td> <td>${f.date}</td>
-                    <td class="mono">${f.accession_no}</td>
+                    <td>${f.report_period}</td> 
+                    <td>${f.date}</td>
+                    <td class="mono" style="color: #0070f3; text-decoration: underline;">${f.accession_no}</td>
                 </tr>`;
             });
             updateTimestamp();
         })
         .catch(err => {
-            tbody.innerHTML = `<tr><td colspan="5" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
         });
 }
 
@@ -237,6 +265,8 @@ function loadFilings(page) {
 // FETCH AND SPLIT HOLDINGS
 // ==========================================
 function fetchHoldings(accessionNo, updateUrl = true) {
+    hideAllViews();
+
     cachedPortfolioSummary = "";
 
     // NEW: Push the accession number to the browser URL
@@ -246,9 +276,15 @@ function fetchHoldings(accessionNo, updateUrl = true) {
         window.history.pushState({ accessionNo }, '', url);
     }
 
-    document.getElementById('back-btn').onclick = () => switchModule(null, '13f');
+    const backBtn = document.getElementById('back-btn');
+    backBtn.innerText = "← Back to 13F List"; // Keep button context accurate
+    backBtn.onclick = () => switchModule(null, '13f');
+    backBtn.style.display = 'block';
 
-    showHoldingsView();
+    document.getElementById('holdings-view').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "SEC 13F-HR Holdings Detail";
+
     document.getElementById('c-name').innerText = "Loading data...";
     document.getElementById('stocks-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
     document.getElementById('options-body').innerHTML = `<tr><td colspan="8" class="loading">Parsing filing...</td></tr>`;
@@ -617,13 +653,16 @@ function switchModule(event, module, updateUrl = true) {
     if (event) event.preventDefault();
     currentModule = module;
     
-    // NEW: Save the active module to the URL so refreshes remember where you are
+    // 1. Wipe the entire canvas clean instantly!
+    hideAllViews();
+    
+    // Save the active module to the URL so refreshes remember where you are
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('module', module);
         url.searchParams.delete('accession'); 
         
-        // Clean up any Corporate Document data
+        // Clean up any Document deep-dive parameters
         url.searchParams.delete('doc');
         url.searchParams.delete('c');
         url.searchParams.delete('f');
@@ -633,13 +672,14 @@ function switchModule(event, module, updateUrl = true) {
         window.history.pushState({ module: module }, '', url);
     }
     
-    // Clear all active states safely
+    // Clear all tab active highlights safely
     document.getElementById('nav-13f').classList.remove('active');
     if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
     if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
     if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+    if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.remove('active');
     
-    // Route to the correct view (passing false so we don't overwrite the URL we just set)
+    // Route to the correct master view list
     if (module === '13f') {
         document.getElementById('nav-13f').classList.add('active');
         showFilingsView(true, false, true); 
@@ -652,6 +692,9 @@ function switchModule(event, module, updateUrl = true) {
     } else if (module === 'formd') {
         document.getElementById('nav-formd').classList.add('active');
         showFormDView(true, false, true);
+    } else if (module === '13d') {
+        document.getElementById('nav-13d').classList.add('active');
+        show13dView(true);
     }
 }
 
@@ -659,16 +702,12 @@ function showFilingsView(fetchData = true, updateUrl = true, resetPage = false) 
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.delete('accession');
+        url.searchParams.delete('doc'); // Clean up any active document params
         window.history.pushState({}, '', url);
     }
     if (resetPage) currentFilingsPage = 1;
 
-    // Hide everything else
-    document.getElementById('holdings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    hideAllViews();
     
     document.getElementById('filings-view').style.display = 'block';
     document.getElementById('back-btn').style.display = 'none';
@@ -678,28 +717,13 @@ function showFilingsView(fetchData = true, updateUrl = true, resetPage = false) 
     if (fetchData) loadFilings(currentFilingsPage);
 }
 
-function showHoldingsView() {
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
-    
-    document.getElementById('holdings-view').style.display = 'block';
-    document.getElementById('back-btn').style.display = 'block';
-    document.getElementById('filings-controls').style.display = 'none'; 
-    document.getElementById('page-title').innerText = "SEC 13F-HR Holdings Detail";
-}
-
 function showCorporateView(fetchData = true, updateUrl = true, resetPage = false) {
     if (resetPage) currentCorporatePage = 1;
-
-    document.getElementById('holdings-view').style.display = 'none';
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
     
+    // 1. Clear the entire workspace instantly
+    hideAllViews();
+
+    // 2. Set up local layout parameters natively
     document.getElementById('corporate-view').style.display = 'block';
     document.getElementById('back-btn').style.display = 'none';
     document.getElementById('filings-controls').style.display = 'flex'; 
@@ -711,14 +735,10 @@ function showCorporateView(fetchData = true, updateUrl = true, resetPage = false
 function showInsiderView(fetchData = true, updateUrl = true, resetPage = false) {
     if (resetPage) currentInsiderPage = 1;
 
-    document.getElementById('holdings-view').style.display = 'none';
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    // 1. Wipe the entire canvas clean instantly
+    hideAllViews();
 
-    document.getElementById('insider-doc-view').style.display = 'none';
-    
+    // 2. Open the Form 4 master list panel states explicitly
     document.getElementById('insider-view').style.display = 'block';
     document.getElementById('back-btn').style.display = 'none';
     document.getElementById('filings-controls').style.display = 'flex'; 
@@ -872,15 +892,10 @@ let currentFormDPage = 1;
 function showFormDView(fetchData = true, updateUrl = true, resetPage = false) {
     if (resetPage) currentFormDPage = 1;
 
-    // Hide all other views
-    document.getElementById('holdings-view').style.display = 'none';
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    // 1. Wipe the entire canvas clean instantly
+    hideAllViews();
     
-    // Show Form D view
+    // 2. Open the Form D master list panel states explicitly
     document.getElementById('formd-view').style.display = 'block';
     document.getElementById('back-btn').style.display = 'none';
     document.getElementById('filings-controls').style.display = 'flex'; 
@@ -919,20 +934,31 @@ function loadFormDFilings(page) {
                 const accStripped = String(f.accession_no).replace(/-/g, '');
                 const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
 
-                // Distinct badge color for Form D vs D/A
                 const badgeStyle = f.form === 'D/A' 
-                    ? 'background: #9c27b0; color: white;' // Purple for amended
-                    : 'background: #673ab7; color: white;'; // Deep purple for initial
+                    ? 'background: #9c27b0; color: white;' 
+                    : 'background: #673ab7; color: white;';
 
-                tbody.innerHTML += `<tr>
+                // CHANGED: Wired up custom detail loader tracking parameters safely
+                tbody.innerHTML += `<tr style="cursor: pointer;">
                     <td>${offset + i + 1}</td>
                     <td><span class="badge" style="${badgeStyle}">${f.form}</span></td>
-                    <td style="font-weight: bold;">${f.company}</td>
+                    <td style="font-weight: bold; color: #111;">${f.company}</td>
                     <td class="mono">${f.cik}</td>
                     <td>${f.report_period}</td> 
                     <td>${f.date}</td>
-                    <td class="mono">${f.accession_no}</td>
-                    <td><a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none;">View SEC ↗</a></td>
+                    <td class="mono">
+                        <a href="javascript:void(0);" onclick="openFormDDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                        style="color: #673ab7; text-decoration: underline; font-weight: bold;">
+                            ${f.accession_no}
+                        </a>
+                    </td>
+                    <td style="display: flex; gap: 8px;">
+                        <button onclick="openFormDDocument('${f.company.replace(/'/g, "\\'")}', '${f.form}', '${f.date}', '${f.accession_no}', '${secHtmlUrl}')" 
+                                class="btn-primary" style="padding: 4px 8px; font-size: 11px; background: #673ab7;">
+                            View Offering
+                        </button>
+                        <a href="${secHtmlUrl}" target="_blank" class="btn-primary" style="padding: 4px 8px; font-size: 11px; text-decoration: none; background: #666;">View SEC ↗</a>
+                    </td>
                 </tr>`;
             });
             
@@ -947,24 +973,16 @@ function changeFormDPage(dir) {
     if (currentFormDPage + dir > 0) loadFormDFilings(currentFormDPage + dir);
 }
 
-// --- NEW ROUTER VIEW ---
-function showOverviewView() {
-    document.getElementById('filings-view').style.display = 'none';
-    if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-    if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
-    if (document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
-
-    document.getElementById('holdings-view').style.display = 'none';
-    
-    document.getElementById('overview-view').style.display = 'block';
-    document.getElementById('back-btn').style.display = 'none';
-    document.getElementById('filings-controls').style.display = 'none';
-    document.getElementById('page-title').innerText = "Company Overview";
-}
-
 // --- NEW DATA FETCHER ---
 function loadCompanyOverview(cik) {
+    hideAllViews();
+
+    document.getElementById('nav-13f').classList.remove('active');
+    if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.remove('active');
+    if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.remove('active');
+    if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.remove('active');
+    if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.remove('active');
+
     // Close dropdown and reset search
     document.getElementById('search-dropdown').style.display = 'none';
     document.getElementById('global-search-input').value = "";
@@ -973,7 +991,11 @@ function loadCompanyOverview(cik) {
     document.getElementById('auto-refresh-cb').checked = false;
     toggleLiveMode();
     
-    showOverviewView();
+    // 2. Set up the local overview view states directly here
+    document.getElementById('overview-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'none';
+    
     document.getElementById('ov-name').innerText = "Fetching SEC Database...";
     
     const tbody = document.getElementById('overview-body');
@@ -1053,6 +1075,9 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
     isSegmentMode = false;
     trendCache = { income: null, balance: null, cash: null };
     splitsCache = [];
+
+    hideAllViews();
+
     if (document.getElementById('trend-btn')) {
         document.getElementById('trend-btn').innerText = "Show 5-Year Trend";
         document.getElementById('trend-btn').style.background = "#1976d2";
@@ -1086,6 +1111,7 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
     if (document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
     if (document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
     if (document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if (document.getElementById('formd-doc-view')) document.getElementById('formd-doc-view').style.display = 'none';
 
     // 3. Show the document view
     document.getElementById('corp-doc-view').style.display = 'block';
@@ -1157,6 +1183,8 @@ function openCorporateDocument(company, form, period, date, accession_no, secUrl
 }
 
 function openInsiderDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    hideAllViews();
+
     if (updateUrl) {
         const url = new URL(window.location);
         url.searchParams.set('module', 'insider');
@@ -1168,20 +1196,13 @@ function openInsiderDocument(company, form, date, accession_no, secUrl, updateUr
         window.history.pushState({ doc: accession_no }, '', url);
     }
 
-    document.getElementById('back-btn').onclick = () => switchModule(null, 'insider');
+    const backBtn = document.getElementById('back-btn');
+    backBtn.innerText = "← Back to Insider List"; // Keep button context accurate
+    backBtn.onclick = () => switchModule(null, 'insider');
+    backBtn.style.display = 'block';
 
-    // Hide all other views
-    document.getElementById('filings-view').style.display = 'none';
-    if(document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
-    if(document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
-    if(document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
-    if(document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
-    if(document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
-    if(document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
-
-    // Show Insider view
+    // 2. Open the insider panel states explicitly here
     document.getElementById('insider-doc-view').style.display = 'block';
-    document.getElementById('back-btn').style.display = 'block';
     document.getElementById('filings-controls').style.display = 'none';
     document.getElementById('page-title').innerText = "Insider Transaction Detail";
 
@@ -1697,6 +1718,278 @@ function buildFinancialTable(data, thead, tbody) {
     });
 }
 
+// --- 13D STATE ---
+let current13dPage = 1;
+
+function show13dView(fetchData = true) {
+
+    // 1. Wipe the entire canvas clean instantly
+    hideAllViews();
+
+    // 2. Open the Schedule 13D master list panel states explicitly
+    document.getElementById('thirteend-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'none';
+    document.getElementById('filings-controls').style.display = 'flex'; 
+    document.getElementById('page-title').innerText = "Schedule 13D (Activist/Active)";
+    
+    if (fetchData) load13dFilings(current13dPage);
+}
+
+function load13dFilings(page) {
+    current13dPage = page;
+    const tbody = document.getElementById('thirteend-body');
+    tbody.innerHTML = `<tr><td colspan="6" class="loading">Loading Schedule 13D filings...</td></tr>`;
+    
+    fetch(`/api/filings/13d?page=${page}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            tbody.innerHTML = data.filings.map((f, i) => {
+                const cikStripped = String(f.cik).replace(/^0+/, '');
+                const accStripped = String(f.accession_no).replace(/-/g, '');
+                const secHtmlUrl = `https://www.sec.gov/Archives/edgar/data/${cikStripped}/${accStripped}/${f.accession_no}-index.html`;
+                const companyName = f.company_name || 'Unknown Issuer';
+                const safeCompany = companyName.replace(/'/g, "\\'");
+
+                return `<tr style="cursor: pointer;" onclick="open13DDocument('${safeCompany}', '${f.filing_date}', '${f.accession_no}', '${secHtmlUrl}')">
+                    <td>${i + 1}</td>
+                    <td><span class="badge" style="background: #e91e63; color: white;">${f.form}</span></td>
+                    <td style="font-weight: bold; color: #111;">${companyName}</td>
+                    <td class="mono">${f.cik}</td>
+                    <td>${f.filing_date}</td> 
+                    <td class="mono" style="color: #0070f3; text-decoration: underline;">${f.accession_no}</td>
+                </tr>`;
+            }).join('');
+            
+            if (typeof updateTimestamp === 'function') updateTimestamp();
+        })
+        .catch(err => {
+            tbody.innerHTML = `<tr><td colspan="6" style="color:red; text-align:center;">Error: ${err.message}</td></tr>`;
+        });
+}
+
+// ==========================================
+// SCHEDULE 13D ACTIVIST DEEP DIVE VIEW WRAPPER
+// ==========================================
+function open13DDocument(company, date, accession_no, secUrl, updateUrl = true) {
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', '13d');
+        url.searchParams.set('doc', accession_no);
+        url.searchParams.set('c', company);
+        url.searchParams.set('d', date);
+        url.searchParams.set('s', secUrl);
+        window.history.pushState({ doc: accession_no }, '', url);
+    }
+
+    hideAllViews();
+
+    document.getElementById('back-btn').onclick = () => switchModule(null, '13d');
+
+    // Hide everything else
+    document.getElementById('filings-view').style.display = 'none';
+    if(document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if(document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
+    if(document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if(document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    if(document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if(document.getElementById('formd-doc-view')) document.getElementById('formd-doc-view').style.display = 'none';
+    if(document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if(document.getElementById('insider-doc-view')) document.getElementById('insider-doc-view').style.display = 'none';
+    document.getElementById('thirteend-view').style.display = 'none';
+
+    // Show 13D Workspace Panel
+    document.getElementById('thirteend-doc-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "Activist Venture Campaign Breakdown";
+
+    // Static markers
+    document.getElementById('sd-issuer-name').innerText = company;
+    document.getElementById('sd-date').innerText = date;
+    document.getElementById('sd-acc').innerText = accession_no;
+    document.getElementById('sd-raw-link').href = secUrl;
+
+    const purposeBox = document.getElementById('sd-purpose');
+    const personsBody = document.getElementById('sd-persons-body');
+
+    purposeBox.innerHTML = '<span class="loading">Extracting structural Item 4 strategic positions...</span>';
+    personsBody.innerHTML = '<tr><td colspan="3" class="loading">Parsing beneficiary stake owners...</td></tr>';
+
+    fetch(`/api/13d/${accession_no}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+
+            // Populate Item 4 and Total Percentage
+            purposeBox.innerText = data.purpose || "No Item 4 statement filed explicitly or data field is unmappable.";
+            document.getElementById('sd-total-percent').innerText = data.total_percent ? `${data.total_percent}%` : "Not Stated";
+
+            // Populate Reporting Whales
+            personsBody.innerHTML = '';
+            if (!data.reporting_persons || data.reporting_persons.length === 0) {
+                personsBody.innerHTML = '<tr><td colspan="3" style="text-align:center; color:#888;">No explicit individual tracking files mapped.</td></tr>';
+            } else {
+                data.reporting_persons.forEach(p => {
+                    const cleanAmt = typeof p.amount === 'number' ? p.amount.toLocaleString() : (p.amount || '-');
+                    personsBody.innerHTML += `<tr>
+                        <td style="font-weight:600; color:#e91e63;">${p.name}</td>
+                        <td class="num">${cleanAmt}</td>
+                        <td class="num" style="font-weight:bold; color:#111;">${p.percent}%</td>
+                    </tr>`;
+                });
+            }
+        })
+        .catch(err => {
+            purposeBox.innerHTML = `<span style="color:red;">Error loading activist goals: ${err.message}</span>`;
+            personsBody.innerHTML = `<tr><td colspan="3" style="color:red;">Failed to resolve parameters.</td></tr>`;
+        });
+}
+
+// ==========================================
+// FORM D COMPREHENSIVE DETAIL DISPLAY LOADER
+// ==========================================
+function openFormDDocument(company, form, date, accession_no, secUrl, updateUrl = true) {
+    if (updateUrl) {
+        const url = new URL(window.location);
+        url.searchParams.set('module', 'formd');
+        url.searchParams.set('doc', accession_no);
+        url.searchParams.set('c', company);
+        url.searchParams.set('f', form);
+        url.searchParams.set('d', date);
+        url.searchParams.set('s', secUrl);
+        window.history.pushState({ doc: accession_no }, '', url);
+    }
+
+    hideAllViews();
+
+    document.getElementById('back-btn').onclick = () => switchModule(null, 'formd');
+
+    // Hide all other views
+    document.getElementById('filings-view').style.display = 'none';
+    if(document.getElementById('overview-view')) document.getElementById('overview-view').style.display = 'none';
+    if(document.getElementById('holdings-view')) document.getElementById('holdings-view').style.display = 'none';
+    if(document.getElementById('corporate-view')) document.getElementById('corporate-view').style.display = 'none';
+    if(document.getElementById('corp-doc-view')) document.getElementById('corp-doc-view').style.display = 'none';
+    if(document.getElementById('formd-view')) document.getElementById('formd-view').style.display = 'none';
+    if(document.getElementById('insider-view')) document.getElementById('insider-view').style.display = 'none';
+    if(document.getElementById('insider-doc-view')) document.getElementById('insider-doc-view').style.display = 'none';
+
+    // Show Form D view workspace structures
+    document.getElementById('formd-doc-view').style.display = 'block';
+    document.getElementById('back-btn').style.display = 'block';
+    document.getElementById('filings-controls').style.display = 'none';
+    document.getElementById('page-title').innerText = "Private Placement Offering Breakdown";
+
+    // Set basics static markers info cards
+    document.getElementById('fd-company-name').innerText = company;
+    document.getElementById('fd-form').innerText = form;
+    document.getElementById('fd-acc').innerText = accession_no;
+    document.getElementById('fd-raw-link').href = secUrl;
+
+    const relBody = document.getElementById('fd-related-body');
+    const salesBody = document.getElementById('fd-sales-body');
+    
+    relBody.innerHTML = '<tr><td colspan="2" class="loading">Parsing governance roster data matrix...</td></tr>';
+    salesBody.innerHTML = '<tr><td colspan="4" class="loading">Parsing intermediary transaction networks...</td></tr>';
+
+    fetch(`/api/formd/${accession_no}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            
+            const i = data.issuer;
+            const o = data.offering;
+
+            // Map Corporate Profiles
+            document.getElementById('fd-cik').innerText = i.cik;
+            document.getElementById('fd-entity-type').innerText = i.entity_type;
+            document.getElementById('fd-jurisdiction').innerText = i.jurisdiction;
+            document.getElementById('fd-inc-year').innerText = i.year_of_incorporation;
+            document.getElementById('fd-industry').innerText = o.industry_group;
+            document.getElementById('fd-revenue-range').innerText = o.revenue_range;
+            document.getElementById('fd-sale-date').innerText = o.date_of_first_sale;
+            document.getElementById('fd-phone').innerText = i.phone;
+            document.getElementById('fd-address').innerText = i.address;
+
+            // Show Startup badge conditionally
+            document.getElementById('fd-startup-badge').style.display = i.is_startup ? 'inline-block' : 'none';
+
+            // Clean numerical data tracking conversion parsing helpers [cite: 185]
+            const parseVal = (v) => v ? parseFloat(String(v).replace(/[^0-9.-]+/g, "")) : 0;
+            const fmtCurr = (v) => {
+                const n = parseVal(v);
+                return n === 0 ? "Indefinite / Unspecified" : `$${n.toLocaleString('en-US')}`;
+            };
+
+            const total = parseVal(o.total_offering);
+            const sold = parseVal(o.total_sold);
+            const remaining = parseVal(o.total_remaining);
+
+            document.getElementById('fd-total-offering').innerText = fmtCurr(o.total_offering);
+            document.getElementById('fd-total-sold').innerText = fmtCurr(o.total_sold);
+            document.getElementById('fd-total-remaining').innerText = fmtCurr(o.total_remaining);
+            document.getElementById('fd-investors').innerText = o.investor_count ? parseInt(o.investor_count).toLocaleString() : '0';
+            document.getElementById('fd-min-investment').innerText = fmtCurr(o.minimum_investment);
+
+            // Dynamic Progress Indicator math engine computations
+            let pct = 0;
+            if (total > 0) {
+                pct = Math.min(((sold / total) * 100), 100);
+                document.getElementById('fd-progress-pct').innerText = `${pct.toFixed(1)}% Raised`;
+            } else if (sold > 0) {
+                document.getElementById('fd-progress-pct').innerText = "Continuous / Open Subscription Raise";
+                pct = 100; // Fill bar for continuous offerings
+            } else {
+                document.getElementById('fd-progress-pct').innerText = "0% Raised";
+            }
+            document.getElementById('fd-progress-bar').style.width = `${pct}%`;
+
+            // Dynamic Federation Exemption Badges Injection Map [cite: 64, 202]
+            const badgeBox = document.getElementById('fd-exemption-badges');
+            badgeBox.innerHTML = '';
+            if (o.exemptions && o.exemptions.length > 0) {
+                o.exemptions.forEach(ex => {
+                    badgeBox.innerHTML += `<span class="badge" style="background:#e1bee7; color:#4a148c; font-size:9px;">Rule ${ex}</span>`;
+                });
+            }
+
+            // Render Related Persons Matrix [cite: 21, 156, 205]
+            relBody.innerHTML = '';
+            if (data.related_persons.length === 0) {
+                relBody.innerHTML = '<tr><td colspan="2" style="text-align:center; color:#888;">No related executive officers logged.</td></tr>';
+            } else {
+                data.related_persons.forEach(p => {
+                    relBody.innerHTML += `<tr>
+                        <td style="font-weight:600; color:#111;">${p.name}</td>
+                        <td class="mono" style="font-size:11px;">${p.address}</td>
+                    </tr>`;
+                });
+            }
+
+            // Render Intermediary Network Placement Agents Network matrix [cite: 69, 160, 208]
+            salesBody.innerHTML = '';
+            if (data.sales_recipients.length === 0) {
+                salesBody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#888;">Direct placement sale raise execution (No external placement agents utilized).</td></tr>';
+            } else {
+                data.sales_recipients.forEach(r => {
+                    const cleanStates = Array.isArray(r.states) ? r.states.join(', ') : String(r.states);
+                    salesBody.innerHTML += `<tr>
+                        <td style="font-weight:600; color:#4a148c;">${r.name}</td>
+                        <td class="mono">${r.crd}</td>
+                        <td style="font-weight:500;">${r.associated_bd}</td>
+                        <td style="white-space:normal; max-width:250px; font-size:10px; color:#555; line-height:1.3;">${cleanStates}</td>
+                    </tr>`;
+                });
+            }
+        })
+        .catch(err => {
+            relBody.innerHTML = `<tr><td colspan="2" style="color:red;">Error loading document details: ${err.message}</td></tr>`;
+            salesBody.innerHTML = `<tr><td colspan="4" style="color:red;">Error details tracking failed.</td></tr>`;
+        });
+}
+
 
 // ==========================================
 // BROWSER HISTORY ROUTING
@@ -1716,14 +2009,27 @@ window.addEventListener('popstate', (event) => {
     if (currentAcc) {
         document.getElementById('nav-13f').classList.add('active');
         fetchHoldings(currentAcc, false); 
-    } else if (currentDoc) {
-        // Rebuild the Corporate Document from URL parameters
-        document.getElementById('nav-corp').classList.add('active');
+    } else if (currentDoc && currentMod === 'formd') {
+        if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.add('active');
+        openFormDDocument(urlParams.get('c'), urlParams.get('f'), urlParams.get('d'), currentDoc, urlParams.get('s'), false);
+    } else if (currentDoc && currentMod === '13d') {
+        if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.add('active');
+        open13DDocument(urlParams.get('c'), urlParams.get('d'), currentDoc, urlParams.get('s'), false);
+    } else if (currentDoc && currentMod === 'corp') {
+        // 2. Check Corporate Documents (10-K / 10-Q)
+        if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.add('active');
         openCorporateDocument(
             urlParams.get('c'), urlParams.get('f'), urlParams.get('p'), 
             urlParams.get('d'), currentDoc, urlParams.get('s'), false
         );
+    } else if (currentDoc && currentMod === 'insider') {
+        // 3. Check Form 4 Insider Document routing (Good practice to keep this matched up!)
+        if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.add('active');
+        openInsiderDocument(
+            urlParams.get('c'), urlParams.get('f'), urlParams.get('d'), currentDoc, urlParams.get('s'), false
+        );
     } else {
+        // Fallback for default list views
         switchModule(null, currentMod, false);
     }
 });
@@ -1739,13 +2045,26 @@ const initialMod = initialUrlParams.get('module') || '13f';
 if (initialAcc) {
     document.getElementById('nav-13f').classList.add('active');
     fetchHoldings(initialAcc, false);
-} else if (initialDoc) {
-    // Automatically load the corporate doc on a hard refresh
-    document.getElementById('nav-corp').classList.add('active');
+} else if (initialDoc && initialMod === 'formd') {
+    if (document.getElementById('nav-formd')) document.getElementById('nav-formd').classList.add('active');
+    openFormDDocument(initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false);
+} else if (initialDoc && initialMod === '13d') {
+    if (document.getElementById('nav-13d')) document.getElementById('nav-13d').classList.add('active');
+    open13DDocument(initialUrlParams.get('c'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false);
+} else if (initialDoc && initialMod === 'corp') {
+    // Hard refresh into a Corporate document (10-K/10-Q)
+    if (document.getElementById('nav-corp')) document.getElementById('nav-corp').classList.add('active');
     openCorporateDocument(
         initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('p'), 
         initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false
     );
+} else if (initialDoc && initialMod === 'insider') {
+    // Hard refresh into a Form 4 Insider Document
+    if (document.getElementById('nav-insider')) document.getElementById('nav-insider').classList.add('active');
+    openInsiderDocument(
+        initialUrlParams.get('c'), initialUrlParams.get('f'), initialUrlParams.get('d'), initialDoc, initialUrlParams.get('s'), false
+    );
 } else {
+    // Hard refresh onto a standard table view list
     switchModule(null, initialMod, false);
 }

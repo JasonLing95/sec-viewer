@@ -1416,6 +1416,174 @@ def get_insider_document(accession_no: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.get("/api/filings/13d")
+def get_recent_13d_filings(page: int = 1):
+    """Fetches global Schedule 13D and 13D/A filings from Supabase."""
+    try:
+        limit = 50
+        start = (page - 1) * limit
+        end = start + limit - 1
+        response = (
+            supabase.table("sec_filings")
+            .select("*")
+            .in_("form", ["SCHEDULE 13D", "SCHEDULE 13D/A"])
+            .order("filing_date", desc=True)
+            .range(start, end)
+            .execute()
+        )
+        return JSONResponse(content={"filings": response.data, "page": page})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/13d/{accession_no}")
+def get_13d_document(accession_no: str):
+    """Parses a Schedule 13D into rich Python objects to extract activist intent."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        schedule = filing.obj()  # Returns Schedule13D object [cite: 16, 46]
+
+        return JSONResponse(
+            content={
+                "issuer": schedule.issuer_info.name,
+                "total_percent": schedule.total_percent,
+                "purpose": schedule.items.item4_purpose_of_transaction,  # Extracting activist intent [cite: 156, 192]
+                "reporting_persons": [
+                    {
+                        "name": p.name,
+                        "amount": p.aggregate_amount,
+                        "percent": p.percent_of_class,
+                    }
+                    for p in schedule.reporting_persons
+                ],
+            }
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/formd/{accession_no}")
+def get_formd_document(accession_no: str):
+    """Parses a Form D / Regulation D private placement offering document into structured json."""
+    set_identity("data-pipeline@yourdomain.com")
+    try:
+        filing = get_by_accession_number(accession_no)
+        if not filing:
+            return JSONResponse(status_code=404, content={"error": "Filing not found."})
+
+        form_d = filing.obj()  # Returns FormD object [cite: 13, 191]
+        if not form_d:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "Could not parse Form D data structure."},
+            )
+
+        # Issuer Data safely bundled [cite: 21, 25, 30]
+        issuer = form_d.primary_issuer  # [cite: 21, 24]
+        issuer_data = {
+            "name": getattr(issuer, "entity_name", "Unknown"),  # [cite: 25, 193]
+            "cik": getattr(issuer, "cik", "N/A"),  # [cite: 25]
+            "entity_type": getattr(issuer, "entity_type", "N/A"),  # [cite: 25]
+            "jurisdiction": getattr(issuer, "jurisdiction", "N/A"),  # [cite: 30, 193]
+            "year_of_incorporation": getattr(
+                issuer, "year_of_incorporation", "N/A"
+            ),  # [cite: 30]
+            "is_startup": bool(
+                getattr(issuer, "incorporated_within_5_years", False)
+            ),  # [cite: 30]
+            "phone": getattr(issuer, "phone_number", "N/A"),  # [cite: 25]
+            "address": (
+                f"{getattr(issuer.primary_address, 'street1', '')}, {getattr(issuer.primary_address, 'city', '')}, {getattr(issuer.primary_address, 'state_or_country', '')} {getattr(issuer.primary_address, 'zipcode', '')}".strip(
+                    ", "
+                )
+                if hasattr(issuer, "primary_address")
+                else "N/A"
+            ),  # [cite: 25]
+        }
+
+        # Offering Data Metrics [cite: 21, 64, 69]
+        od = form_d.offering_data  # [cite: 21, 63]
+        sales_amounts = getattr(od, "offering_sales_amounts", None)  # [cite: 69]
+        investors_data = getattr(od, "investors", None)  # [cite: 69]
+        industry = getattr(od, "industry_group", None)  # [cite: 64]
+
+        offering_data = {
+            "industry_group": getattr(
+                industry, "industry_group_type", "Other"
+            ),  # [cite: 81]
+            "revenue_range": getattr(
+                od, "revenue_range", "Decline to Disclose"
+            ),  # [cite: 64]
+            "date_of_first_sale": getattr(
+                od, "date_of_first_sale", "N/A"
+            ),  # [cite: 64]
+            "minimum_investment": getattr(od, "minimum_investment", "0"),  # [cite: 69]
+            "total_offering": to_serializable(
+                getattr(sales_amounts, "total_offering_amount", 0)
+            ),  # [cite: 72, 195]
+            "total_sold": to_serializable(
+                getattr(sales_amounts, "total_amount_sold", 0)
+            ),  # [cite: 77, 195]
+            "total_remaining": to_serializable(
+                getattr(sales_amounts, "total_remaining", 0)
+            ),  # [cite: 77]
+            "investor_count": to_serializable(
+                getattr(investors_data, "total_already_invested", 0)
+            ),  # [cite: 79, 195]
+            "exemptions": [
+                str(ex) for ex in getattr(od, "federal_exemptions", [])
+            ],  # [cite: 64, 202]
+        }
+
+        # Related Persons Array [cite: 21, 103, 105]
+        related_persons = []
+        for p in getattr(form_d, "related_persons", []):  # [cite: 21, 205]
+            related_persons.append(
+                {
+                    "name": f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip(),  # [cite: 105, 206]
+                    "address": (
+                        f"{getattr(p.address, 'street1', '')}, {getattr(p.address, 'city', '')}"
+                        if hasattr(p, "address")
+                        else "N/A"
+                    ),  # [cite: 105]
+                }
+            )
+
+        # Sales Compensation Recipients Array [cite: 69, 90, 92]
+        sales_recipients = []
+        for r in getattr(od, "sales_compensation_recipients", []):  # [cite: 69, 208]
+            sales_recipients.append(
+                {
+                    "name": getattr(r, "name", "Unknown"),  # [cite: 92, 209]
+                    "crd": getattr(r, "crd", "N/A"),  # [cite: 92, 209]
+                    "associated_bd": getattr(
+                        r, "associated_bd_name", "N/A"
+                    ),  # [cite: 92]
+                    "states": getattr(
+                        r, "states_of_solicitation", []
+                    ),  # [cite: 92, 210]
+                }
+            )
+
+        return JSONResponse(
+            content=to_serializable(
+                {
+                    "accession_no": accession_no,
+                    "submission_type": getattr(
+                        form_d, "submission_type", "D"
+                    ),  # [cite: 16]
+                    "issuer": issuer_data,
+                    "offering": offering_data,
+                    "related_persons": related_persons,
+                    "sales_recipients": sales_recipients,
+                }
+            )
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.get("/")
 def read_root():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

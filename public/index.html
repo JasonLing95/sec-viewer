@@ -229,7 +229,7 @@
 <body>
     <nav class="global-header">
         <div style="display: flex; align-items: center;">
-            <div class="brand" onclick="showFilingsView(true, true, true)">
+            <div class="brand" onclick="switchModule(null, '13f')">
                 <span class="brand-logo">MQ</span> Moniq Terminal
             </div>
             
@@ -238,7 +238,7 @@
                 <a href="#" id="nav-corp" onclick="switchModule(event, 'corp')">10-Q / 10-K</a>
                 <a href="#" id="nav-insider" onclick="switchModule(event, 'insider')">Form 4</a>
                 <a href="#" id="nav-formd" onclick="switchModule(event, 'formd')">Form D</a>
-                <a href="#" onclick="alert('Schedule 13D Module Coming Soon!')">Schedule 13D</a>
+                <a href="#" id="nav-13d" onclick="switchModule(event, '13d')">Schedule 13D</a>
             </div>
         </div>
         
@@ -401,6 +401,66 @@
             <button id="d-prev" class="page-btn" onclick="changeFormDPage(-1)">← Previous</button>
             <span id="d-ind" style="font-weight: bold; font-size: 13px;">Page 1</span>
             <button id="d-next" class="page-btn" onclick="changeFormDPage(1)">Next →</button>
+        </div>
+    </div>
+
+    <div id="thirteend-view" style="display: none;">
+        <div style="overflow-x: auto;">
+            <table class="screener-table">
+                <thead>
+                    <tr><th>No.</th><th>Form</th><th>Company</th><th>CIK</th><th>Filing Date</th><th>Accession No.</th></tr>
+                </thead>
+                <tbody id="thirteend-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="thirteend-doc-view" style="display: none;">
+        <div class="company-panel" style="border-left-color: #e91e63; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 id="sd-issuer-name">Loading Activist Position...</h2>
+                <div style="font-size: 13px; color: #555;">
+                    <strong>Form Type:</strong> <span class="badge" style="background: #e91e63; color: white;">SCHEDULE 13D</span> |
+                    <strong>Filing Accession:</strong> <span id="sd-acc" class="mono">-</span> |
+                    <a id="sd-raw-link" href="#" target="_blank" style="color: #0070f3; font-weight: bold; text-decoration: none;">View SEC Original Index ↗</a>
+                </div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Aggregated Ownership Stake %</div>
+                <div id="sd-total-percent" style="font-size: 24px; font-weight: bold; color: #e91e63;">-%</div>
+            </div>
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Filing Date</div>
+                <div id="sd-date" style="font-size: 24px; font-weight: bold; color: #111;">-</div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start;">
+            <div style="background: white; border: 1px solid #ddd; padding: 15px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <h3 style="margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;">Item 4: Purpose of Transaction (Activist Intent)</h3>
+                <div id="sd-purpose" style="font-size: 13px; line-height: 1.6; color: #333; white-space: pre-wrap; max-height: 400px; overflow-y: auto; background: #fafafa; padding: 12px; border-radius: 4px; border: 1px solid #eef;">
+                    Extracting narrative transaction goals...
+                </div>
+            </div>
+
+            <div style="background: white; border: 1px solid #ddd; padding: 15px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <h3 style="margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;">Disclosed Reporting Persons & Whales</h3>
+                <div style="max-height: 430px; overflow-y: auto;">
+                    <table class="screener-table" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Entity / Beneficial Owner Name</th>
+                                <th style="text-align: right;">Aggregate Amount Traded</th>
+                                <th style="text-align: right;">Class Percent</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sd-persons-body"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -663,6 +723,85 @@
                     <tr><td class="loading">Loading insider transactions...</td></tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <div id="formd-doc-view" style="display: none;">
+        <div class="company-panel" style="border-left-color: #673ab7; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h2 id="fd-company-name">Loading Private Placement...</h2>
+                <div style="font-size: 13px; color: #555;">
+                    <strong>Form Type:</strong> <span id="fd-form" class="badge" style="background: #673ab7; color: white;">-</span> |
+                    <strong>Filing Accession:</strong> <span id="fd-acc" class="mono">-</span> |
+                    <a id="fd-raw-link" href="#" target="_blank" style="color: #0070f3; font-weight: bold; text-decoration: none;">View SEC Index Original ↗</a>
+                </div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #e0e0e0; margin-bottom: 20px;">
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Total Target Raising</div>
+                <div id="fd-total-offering" style="font-size: 18px; font-weight: bold; color: #111;">$-</div>
+                <div id="fd-exemption-badges" style="margin-top: 5px; display: flex; gap: 4px; flex-wrap: wrap;"></div>
+            </div>
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Amount Already Confirmed Sold</div>
+                <div id="fd-total-sold" style="font-size: 18px; font-weight: bold; color: #2e7d32;">$-</div>
+                <div id="fd-progress-pct" style="font-size: 12px; color: #555; font-weight: bold; margin-top: 2px;">0% Raised</div>
+            </div>
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Total Remaining Balance</div>
+                <div id="fd-total-remaining" style="font-size: 18px; font-weight: bold; color: #0070f3;">$-</div>
+            </div>
+            <div>
+                <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: bold;">Disclosed Investors Count</div>
+                <div id="fd-investors" style="font-size: 18px; font-weight: bold; color: #111;">-</div>
+                <div style="font-size: 11px; color: #777; margin-top: 2px;">Min Investment: <span id="fd-min-investment">-</span></div>
+            </div>
+        </div>
+
+        <div style="width: 100%; background: #e0e0e0; height: 10px; border-radius: 5px; margin-bottom: 25px; overflow: hidden;">
+            <div id="fd-progress-bar" style="background: #673ab7; height: 100%; width: 0%; transition: width 0.4s ease;"></div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start;">
+            
+            <div style="background: white; border: 1px solid #ddd; padding: 15px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <h3 style="margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;">Organization Profile</h3>
+                <table style="width: 100%; font-size: 12px; line-height: 2;">
+                    <tr><td style="width: 140px; color: #666; font-weight: bold;">CIK Identifier:</td><td id="fd-cik" class="mono"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Legal Entity Type:</td><td><span id="fd-entity-type" class="badge"></span></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Jurisdiction Setup:</td><td id="fd-jurisdiction"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Incorp Segment Era:</td><td><span id="fd-inc-year"></span> <span id="fd-startup-badge" class="status-new" style="display:none; margin-left:5px;">STARTUP</span></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Industry Sector Group:</td><td id="fd-industry" style="font-weight: 500; color: #4a148c;"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Revenue Bracket Class:</td><td id="fd-revenue-range"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Date of First Sale:</td><td id="fd-sale-date"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">Business Contact Phone:</td><td id="fd-phone"></td></tr>
+                    <tr><td style="color: #666; font-weight: bold;">HQ Business Address:</td><td id="fd-address" style="line-height:1.4;"></td></tr>
+                </table>
+            </div>
+
+            <div style="background: white; border: 1px solid #ddd; padding: 15px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                <h3 style="margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;">Related Governance Persons (Executives & Directors)</h3>
+                <div style="max-height: 250px; overflow-y: auto;">
+                    <table class="screener-table" style="width: 100%;">
+                        <thead><tr><th>Corporate Personnel Name</th><th>Contact / Primary Location Address Scope</th></tr></thead>
+                        <tbody id="fd-related-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px; background: white; border: 1px solid #ddd; padding: 15px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            <h3 style="margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 8px;">Sales Compensation & Placement Agents Broker-Dealers</h3>
+            <div style="overflow-x: auto;">
+                <table class="screener-table" style="width: 100%;">
+                    <thead>
+                        <tr><th>Recipient Agent / Individual Name</th><th>FINRA CRD ID</th><th>Associated Broker-Dealer Firm Group Name</th><th>States Authorized Solicitation Geographic Scope</th></tr>
+                    </thead>
+                    <tbody id="fd-sales-body"></tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
